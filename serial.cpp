@@ -178,7 +178,7 @@ bool SerialPort::send(wchar_t ch)
         return false;
     }
 
-    m_tx.fetch_add(1);
+    m_tx.fetch_add(n);
     return true;
 }
 

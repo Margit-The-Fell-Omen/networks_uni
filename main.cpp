@@ -28,7 +28,6 @@ namespace
     HWND g_comboBaud = nullptr;
     HWND g_inputEdit = nullptr;
     HWND g_outputEdit = nullptr;
-    HWND g_statusConn = nullptr;
     HWND g_statusTx = nullptr;
     HWND g_statusErr = nullptr;
 
@@ -100,10 +99,7 @@ static void AppendOutputChar(wchar_t ch)
 
 static void RefreshStatus()
 {
-    std::wstring conn = g_serial.isOpen() ? L"Подключено" : L"Отключено";
-    SetWindowTextW(g_statusConn, conn.c_str());
-
-    std::wstring tx = L"Передано символов: " + std::to_wstring(g_serial.transmitted());
+    std::wstring tx = L"Передано байт: " + std::to_wstring(g_serial.transmitted());
     SetWindowTextW(g_statusTx, tx.c_str());
 
     SetWindowTextW(g_statusErr, g_serial.lastError().c_str());
@@ -147,14 +143,8 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         SendMessageW(g_comboBaud, CB_SETCURSEL, kDefaultBaudIndex, 0);
 
         FillPortCombo();
-        SetTimer(hwnd, 2, 2000, nullptr);
         return 0;
     }
-
-    case WM_TIMER:
-        if (wParam == 2 && !g_serial.isOpen())
-            FillPortCombo();
-        return 0;
 
     case WM_COMMAND: {
         int code = HIWORD(wParam);
@@ -168,6 +158,7 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 if (baudSel == CB_ERR)
                     baudSel = kDefaultBaudIndex;
                 g_serial.open(g_currentPort, kBaudRates[baudSel]);
+                EnableWindow(g_comboPort, FALSE);
                 RefreshStatus();
             }
             return 0;
@@ -255,9 +246,8 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 {
     switch (msg) {
     case WM_CREATE: {
-        g_statusConn = CreateLabel(hwnd, L"Отключено", 16, 16, 340, 22);
-        g_statusTx = CreateLabel(hwnd, L"Передано символов: 0", 16, 48, 340, 22);
-        g_statusErr = CreateLabel(hwnd, L"", 16, 80, 340, 60);
+        g_statusTx = CreateLabel(hwnd, L"Передано байт: 0", 16, 16, 340, 22);
+        g_statusErr = CreateLabel(hwnd, L"", 16, 48, 340, 60);
 
         SetTimer(hwnd, 1, 1000, nullptr);
         RefreshStatus();
