@@ -39,6 +39,14 @@ namespace
     bool g_lastWasCR = false;
 }
 
+static void CloseAllWindows()
+{
+    if (g_controlWnd) DestroyWindow(g_controlWnd);
+    if (g_inputWnd)   DestroyWindow(g_inputWnd);
+    if (g_outputWnd)  DestroyWindow(g_outputWnd);
+    if (g_statusWnd)  DestroyWindow(g_statusWnd);
+}
+
 static void SetFont(HWND hwnd)
 {
     SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
@@ -121,14 +129,14 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 {
     switch (msg) {
     case WM_CREATE: {
-        CreateLabel(hwnd, L"COM-порт", 16, 16, 200, 20);
+        CreateLabel(hwnd, L"COM-порт", 16, 16, 70, 20);
 
         g_comboPort = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", L"",
                                       WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST,
                                       16, 42, 320, 300, hwnd, nullptr, nullptr, nullptr);
         SetFont(g_comboPort);
 
-        CreateLabel(hwnd, L"Скорость порта (бод)", 16, 92, 220, 20);
+        CreateLabel(hwnd, L"Скорость порта (бод)", 16, 92, 140, 20);
 
         g_comboBaud = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", L"",
                                       WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST,
@@ -190,7 +198,7 @@ static LRESULT CALLBACK InputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
 {
     switch (msg) {
     case WM_CREATE: {
-        CreateLabel(hwnd, L"Окно ввода (передача)", 12, 12, 440, 20);
+        CreateLabel(hwnd, L"Окно ввода", 12, 12, 80, 20);
 
         g_inputEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                                       WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE |
@@ -209,7 +217,7 @@ static LRESULT CALLBACK InputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         return 0;
 
     case WM_CLOSE:
-        DestroyWindow(hwnd);
+        CloseAllWindows();
         return 0;
     }
 
@@ -220,12 +228,12 @@ static LRESULT CALLBACK OutputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 {
     switch (msg) {
     case WM_CREATE: {
-        CreateLabel(hwnd, L"Окно вывода (приём)", 12, 12, 440, 20);
+        CreateLabel(hwnd, L"Окно вывода ", 12, 12, 90, 20);
 
         g_outputEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                                       WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE |
-                                           ES_READONLY | ES_AUTOVSCROLL,
-                                       12, 40, 460, 268, hwnd, nullptr, nullptr, nullptr);
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE |
+            ES_READONLY | ES_AUTOVSCROLL,
+            12, 40, 460, 268, hwnd, nullptr, nullptr, nullptr);
         SetFont(g_outputEdit);
         return 0;
     }
@@ -235,7 +243,7 @@ static LRESULT CALLBACK OutputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         return 0;
 
     case WM_CLOSE:
-        DestroyWindow(hwnd);
+        CloseAllWindows();
         return 0;
     }
 
@@ -247,7 +255,6 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     switch (msg) {
     case WM_CREATE: {
         g_statusTx = CreateLabel(hwnd, L"Передано байт: 0", 16, 16, 340, 22);
-        g_statusErr = CreateLabel(hwnd, L"", 16, 48, 340, 60);
 
         SetTimer(hwnd, 1, 1000, nullptr);
         RefreshStatus();
@@ -260,7 +267,7 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         return 0;
 
     case WM_CLOSE:
-        DestroyWindow(hwnd);
+        CloseAllWindows();
         return 0;
     }
 
@@ -310,17 +317,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     }
 
     int x = 40;
+    const DWORD WindowStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     g_controlWnd = CreateWindowExW(0, kControlClass, L"Управление",
-                                   WS_OVERLAPPEDWINDOW, x, 60, 380, 240,
+                                   WindowStyle, x, 60, 370, 220,
                                    nullptr, nullptr, hInstance, nullptr);
     g_inputWnd = CreateWindowExW(0, kInputClass, L"Ввод сообщений",
-                                 WS_OVERLAPPEDWINDOW, x + 420, 60, 500, 320,
+                                 WindowStyle, x + 420, 60, 500, 330,
                                  nullptr, nullptr, hInstance, nullptr);
     g_outputWnd = CreateWindowExW(0, kOutputClass, L"Вывод сообщений",
-                                  WS_OVERLAPPEDWINDOW, x + 420, 410, 500, 360,
+                                  WindowStyle, x + 420, 410, 500, 370,
                                   nullptr, nullptr, hInstance, nullptr);
     g_statusWnd = CreateWindowExW(0, kStatusClass, L"Состояние",
-                                  WS_OVERLAPPEDWINDOW, x, 330, 420, 200,
+                                  WindowStyle, x, 330, 320, 100,
                                   nullptr, nullptr, hInstance, nullptr);
 
     if (!g_controlWnd || !g_inputWnd || !g_outputWnd || !g_statusWnd) {
