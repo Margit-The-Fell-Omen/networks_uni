@@ -6,12 +6,12 @@
 
 namespace
 {
-    const wchar_t *kControlClass = L"SerialChatControl";
-    const wchar_t *kInputClass = L"SerialChatInput";
-    const wchar_t *kOutputClass = L"SerialChatOutput";
-    const wchar_t *kStatusClass = L"SerialChatStatus";
+    const wchar_t* kControlClass = L"SerialChatControl";
+    const wchar_t* kInputClass = L"SerialChatInput";
+    const wchar_t* kOutputClass = L"SerialChatOutput";
+    const wchar_t* kStatusClass = L"SerialChatStatus";
 
-    const DWORD kBaudRates[] = {1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200};
+    const DWORD kBaudRates[] = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200 };
     const int kBaudCount = 8;
     const int kDefaultBaudIndex = 3;
 
@@ -37,14 +37,10 @@ namespace
     WNDPROC g_oldInputEditProc = nullptr;
     HFONT g_font = nullptr;
     bool g_lastWasCR = false;
-}
+    bool g_portSelected = false;
 
-static void CloseAllWindows()
-{
-    if (g_controlWnd) DestroyWindow(g_controlWnd);
-    if (g_inputWnd)   DestroyWindow(g_inputWnd);
-    if (g_outputWnd)  DestroyWindow(g_outputWnd);
-    if (g_statusWnd)  DestroyWindow(g_statusWnd);
+    bool g_inputLocked = false;
+    bool g_outputLocked = false;
 }
 
 static void SetFont(HWND hwnd)
@@ -52,13 +48,90 @@ static void SetFont(HWND hwnd)
     SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
 }
 
-static HWND CreateLabel(HWND parent, const wchar_t *text, int x, int y, int w, int h)
+static HWND CreateLabel(HWND parent, const wchar_t* text, int x, int y, int w, int h)
 {
     HWND ctl = CreateWindowExW(0, L"STATIC", text,
-                               WS_CHILD | WS_VISIBLE | SS_LEFT,
-                               x, y, w, h, parent, nullptr, nullptr, nullptr);
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        x, y, w, h, parent, nullptr, nullptr, nullptr);
     SetFont(ctl);
     return ctl;
+}
+
+static int AliveCount()
+{
+    int n = 0;
+    if (g_controlWnd) ++n;
+    if (g_inputWnd)   ++n;
+    if (g_outputWnd)  ++n;
+    if (g_statusWnd)  ++n;
+    return n;
+}
+
+static bool IsLastRemaining()
+{
+    if (!g_inputWnd && !g_outputWnd)
+        return false;
+
+    if (AliveCount() > 1)
+        return false;
+
+    return true;
+}
+
+static bool CanCloseInput()
+{
+    if (!g_portSelected)
+        return false;
+    if (IsLastRemaining())
+        return true;
+    return !g_inputLocked;
+}
+
+static bool CanCloseOutput()
+{
+    if (!g_portSelected)
+        return false;
+    if (IsLastRemaining())
+        return true;
+    return !g_outputLocked;
+}
+
+static void UpdateCloseButtons()
+{
+    if (g_controlWnd) {
+        HMENU menu = GetSystemMenu(g_controlWnd, FALSE);
+        if (menu) {
+            EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | MF_ENABLED);
+            DrawMenuBar(g_controlWnd);
+        }
+    }
+
+    if (g_inputWnd) {
+        HMENU menu = GetSystemMenu(g_inputWnd, FALSE);
+        if (menu) {
+            UINT flags = CanCloseInput() ? MF_ENABLED : MF_GRAYED;
+            EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | flags);
+            DrawMenuBar(g_inputWnd);
+        }
+    }
+
+    if (g_outputWnd) {
+        HMENU menu = GetSystemMenu(g_outputWnd, FALSE);
+        if (menu) {
+            UINT flags = CanCloseOutput() ? MF_ENABLED : MF_GRAYED;
+            EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | flags);
+            DrawMenuBar(g_outputWnd);
+        }
+    }
+
+    if (g_statusWnd) {
+        HMENU menu = GetSystemMenu(g_statusWnd, FALSE);
+        if (menu) {
+            UINT flags = g_portSelected ? MF_ENABLED : MF_GRAYED;
+            EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | flags);
+            DrawMenuBar(g_statusWnd);
+        }
+    }
 }
 
 static void FillPortCombo()
@@ -72,14 +145,14 @@ static void FillPortCombo()
     int select = -1;
     for (size_t i = 0; i < g_ports.size(); ++i) {
         SendMessageW(g_comboPort, CB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(g_ports[i].c_str()));
+            reinterpret_cast<LPARAM>(g_ports[i].c_str()));
         if (current[0] && g_ports[i] == current)
             select = static_cast<int>(i);
     }
     SendMessageW(g_comboPort, CB_SETCURSEL, select, 0);
 }
 
-static void AppendToEdit(HWND edit, const wchar_t *text)
+static void AppendToEdit(HWND edit, const wchar_t* text)
 {
     int len = GetWindowTextLengthW(edit);
     SendMessageW(edit, EM_SETREADONLY, FALSE, 0);
@@ -94,12 +167,14 @@ static void AppendOutputChar(wchar_t ch)
     if (ch == L'\r') {
         AppendToEdit(g_outputEdit, L"\r\n");
         g_lastWasCR = true;
-    } else if (ch == L'\n') {
+    }
+    else if (ch == L'\n') {
         if (!g_lastWasCR)
             AppendToEdit(g_outputEdit, L"\r\n");
         g_lastWasCR = false;
-    } else {
-        wchar_t s[2] = {ch, 0};
+    }
+    else {
+        wchar_t s[2] = { ch, 0 };
         AppendToEdit(g_outputEdit, s);
         g_lastWasCR = false;
     }
@@ -111,6 +186,20 @@ static void RefreshStatus()
     SetWindowTextW(g_statusTx, tx.c_str());
 
     SetWindowTextW(g_statusErr, g_serial.lastError().c_str());
+}
+
+static void CheckAllWindowsClosed()
+{
+    if (!g_controlWnd && !g_inputWnd && !g_outputWnd && !g_statusWnd)
+        PostQuitMessage(0);
+}
+
+static void DestroyAllWindows()
+{
+    if (g_outputWnd)  DestroyWindow(g_outputWnd);
+    if (g_inputWnd)   DestroyWindow(g_inputWnd);
+    if (g_statusWnd)  DestroyWindow(g_statusWnd);
+    if (g_controlWnd) DestroyWindow(g_controlWnd);
 }
 
 static LRESULT CALLBACK InputEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -132,15 +221,15 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         CreateLabel(hwnd, L"COM-порт", 16, 16, 70, 20);
 
         g_comboPort = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", L"",
-                                      WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST,
-                                      16, 42, 320, 300, hwnd, nullptr, nullptr, nullptr);
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST,
+            16, 42, 320, 300, hwnd, nullptr, nullptr, nullptr);
         SetFont(g_comboPort);
 
         CreateLabel(hwnd, L"Скорость порта (бод)", 16, 92, 140, 20);
 
         g_comboBaud = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", L"",
-                                      WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST,
-                                      16, 118, 320, 300, hwnd, nullptr, nullptr, nullptr);
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST,
+            16, 118, 320, 300, hwnd, nullptr, nullptr, nullptr);
         SetFont(g_comboBaud);
 
         for (int i = 0; i < kBaudCount; ++i) {
@@ -153,6 +242,14 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         FillPortCombo();
         return 0;
     }
+
+    case WM_INITMENUPOPUP:
+        if (lParam == 0) {
+            HMENU menu = GetSystemMenu(hwnd, FALSE);
+            if (menu && !g_portSelected)
+                EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | MF_GRAYED);
+        }
+        break;
 
     case WM_COMMAND: {
         int code = HIWORD(wParam);
@@ -167,6 +264,8 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     baudSel = kDefaultBaudIndex;
                 g_serial.open(g_currentPort, kBaudRates[baudSel]);
                 EnableWindow(g_comboPort, FALSE);
+                g_portSelected = true;
+                UpdateCloseButtons();
                 RefreshStatus();
             }
             return 0;
@@ -183,14 +282,18 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
     }
 
     case WM_CLOSE:
-        DestroyWindow(hwnd);
+        if (!g_portSelected)
+            DestroyAllWindows();
+        else
+            DestroyWindow(hwnd);
         return 0;
 
     case WM_DESTROY:
-        PostQuitMessage(0);
+        if (hwnd == g_controlWnd) g_controlWnd = nullptr;
+        UpdateCloseButtons();
+        CheckAllWindowsClosed();
         return 0;
     }
-
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
@@ -201,13 +304,13 @@ static LRESULT CALLBACK InputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         CreateLabel(hwnd, L"Окно ввода", 12, 12, 80, 20);
 
         g_inputEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                                      WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE |
-                                          ES_WANTRETURN | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
-                                      12, 40, 460, 230, hwnd, nullptr, nullptr, nullptr);
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE |
+            ES_WANTRETURN | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
+            12, 40, 460, 230, hwnd, nullptr, nullptr, nullptr);
         SetFont(g_inputEdit);
         g_oldInputEditProc = reinterpret_cast<WNDPROC>(
             SetWindowLongPtrW(g_inputEdit, GWLP_WNDPROC,
-                              reinterpret_cast<LONG_PTR>(InputEditProc)));
+                reinterpret_cast<LONG_PTR>(InputEditProc)));
         SetFocus(g_inputEdit);
         return 0;
     }
@@ -216,8 +319,26 @@ static LRESULT CALLBACK InputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         SetFocus(g_inputEdit);
         return 0;
 
+    case WM_INITMENUPOPUP:
+        if (lParam == 0) {
+            HMENU menu = GetSystemMenu(hwnd, FALSE);
+            if (menu && !CanCloseInput())
+                EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | MF_GRAYED);
+        }
+        break;
+
     case WM_CLOSE:
-        CloseAllWindows();
+        if (!CanCloseInput())
+            return 0;
+        DestroyWindow(hwnd);
+        return 0;
+
+    case WM_DESTROY:
+        if (hwnd == g_inputWnd) g_inputWnd = nullptr;
+        if (g_outputWnd && !IsLastRemaining())
+            g_outputLocked = true;
+        UpdateCloseButtons();
+        CheckAllWindowsClosed();
         return 0;
     }
 
@@ -242,8 +363,26 @@ static LRESULT CALLBACK OutputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         AppendOutputChar(static_cast<wchar_t>(wParam));
         return 0;
 
+    case WM_INITMENUPOPUP:
+        if (lParam == 0) {
+            HMENU menu = GetSystemMenu(hwnd, FALSE);
+            if (menu && !CanCloseOutput())
+                EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | MF_GRAYED);
+        }
+        break;
+
     case WM_CLOSE:
-        CloseAllWindows();
+        if (!CanCloseOutput())
+            return 0;
+        DestroyWindow(hwnd);
+        return 0;
+
+    case WM_DESTROY:
+        if (hwnd == g_outputWnd) g_outputWnd = nullptr;
+        if (g_inputWnd && !IsLastRemaining())
+            g_inputLocked = true;
+        UpdateCloseButtons();
+        CheckAllWindowsClosed();
         return 0;
     }
 
@@ -254,7 +393,7 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 {
     switch (msg) {
     case WM_CREATE: {
-        g_statusTx = CreateLabel(hwnd, L"Передано байт: 0", 16, 16, 340, 22);
+        g_statusTx = CreateLabel(hwnd, L"Передано байт: 0", 16, 16, 150, 22);
 
         SetTimer(hwnd, 1, 1000, nullptr);
         RefreshStatus();
@@ -266,8 +405,24 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             RefreshStatus();
         return 0;
 
+    case WM_INITMENUPOPUP:
+        if (lParam == 0) {
+            HMENU menu = GetSystemMenu(hwnd, FALSE);
+            if (menu && !g_portSelected)
+                EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | MF_GRAYED);
+        }
+        break;
+
     case WM_CLOSE:
-        CloseAllWindows();
+        if (!g_portSelected)
+            return 0;
+        DestroyWindow(hwnd);
+        return 0;
+
+    case WM_DESTROY:
+        if (hwnd == g_statusWnd) g_statusWnd = nullptr;
+        UpdateCloseButtons();
+        CheckAllWindowsClosed();
         return 0;
     }
 
@@ -319,27 +474,29 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     int x = 40;
     const DWORD WindowStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     g_controlWnd = CreateWindowExW(0, kControlClass, L"Управление",
-                                   WindowStyle, x, 60, 370, 220,
-                                   nullptr, nullptr, hInstance, nullptr);
+        WindowStyle, x, 60, 370, 220,
+        nullptr, nullptr, hInstance, nullptr);
     g_inputWnd = CreateWindowExW(0, kInputClass, L"Ввод сообщений",
-                                 WindowStyle, x + 420, 60, 500, 330,
-                                 nullptr, nullptr, hInstance, nullptr);
+        WindowStyle, x + 420, 60, 500, 330,
+        nullptr, nullptr, hInstance, nullptr);
     g_outputWnd = CreateWindowExW(0, kOutputClass, L"Вывод сообщений",
-                                  WindowStyle, x + 420, 410, 500, 370,
-                                  nullptr, nullptr, hInstance, nullptr);
+        WindowStyle, x + 420, 410, 500, 370,
+        nullptr, nullptr, hInstance, nullptr);
     g_statusWnd = CreateWindowExW(0, kStatusClass, L"Состояние",
-                                  WindowStyle, x, 330, 320, 100,
-                                  nullptr, nullptr, hInstance, nullptr);
+        WindowStyle, x, 330, 320, 100,
+        nullptr, nullptr, hInstance, nullptr);
 
     if (!g_controlWnd || !g_inputWnd || !g_outputWnd || !g_statusWnd) {
         MessageBoxW(nullptr, L"Не удалось создать окна.", L"Ошибка", MB_ICONERROR);
         return 1;
     }
 
+    UpdateCloseButtons();
+
     g_serial.setRxCallback([](wchar_t ch) {
         if (g_outputWnd)
             PostMessageW(g_outputWnd, WM_APP_RX, static_cast<WPARAM>(ch), 0);
-    });
+        });
 
     ShowWindow(g_controlWnd, nCmdShow);
     UpdateWindow(g_controlWnd);
