@@ -154,6 +154,9 @@ static void FillPortCombo()
 
 static void AppendToEdit(HWND edit, const wchar_t* text)
 {
+    if (!edit || !IsWindowEnabled(edit))
+        return;
+
     int len = GetWindowTextLengthW(edit);
     SendMessageW(edit, EM_SETREADONLY, FALSE, 0);
     SendMessageW(edit, EM_SETSEL, len, len);
@@ -202,16 +205,123 @@ static void DestroyAllWindows()
     if (g_controlWnd) DestroyWindow(g_controlWnd);
 }
 
+static void MoveInputCaretToEnd(HWND hwnd)
+{
+    int len = GetWindowTextLengthW(hwnd);
+    SendMessageW(hwnd, EM_SETSEL, len, len);
+    SendMessageW(hwnd, EM_SCROLLCARET, 0, 0);
+}
+
 static LRESULT CALLBACK InputEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    if (msg == WM_CHAR) {
+    switch (msg)
+    {
+    case WM_CHAR:
+    {
         wchar_t ch = static_cast<wchar_t>(wParam);
+
+        if (ch == L'\b' || ch == 0x7F) {
+            return 0;
+        }
+
         if (ch == L'\r' || ch >= 0x20) {
             if (g_serial.isOpen())
                 g_serial.send(ch);
         }
+        break;
     }
-    return CallWindowProcW(g_oldInputEditProc, hwnd, msg, wParam, lParam);
+
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+    {
+        bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+
+        switch (wParam)
+        {
+        case VK_LEFT: case VK_RIGHT:
+        case VK_UP:   case VK_DOWN:
+        case VK_HOME: case VK_END:
+        case VK_PRIOR: case VK_NEXT:
+            MoveInputCaretToEnd(hwnd);
+            return 0;
+
+        case VK_BACK:
+        case VK_DELETE:
+            return 0;
+
+        case VK_INSERT:
+            if (ctrl || shift)
+                return 0;
+            break;
+
+        case 'A':
+            if (ctrl) { MoveInputCaretToEnd(hwnd); return 0; }
+            break;
+
+        case 'C':
+            if (ctrl) return 0;
+            break;
+
+        case 'V':
+            if (ctrl) return 0;
+            break;
+
+        case 'X':
+            if (ctrl) return 0;
+            break;
+
+        case 'Z':
+            if (ctrl) return 0;
+            break;
+
+        case 'Y':
+            if (ctrl) return 0;
+            break;
+        }
+        break;
+    }
+
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONDBLCLK:
+    case WM_LBUTTONUP:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+        SetFocus(hwnd);
+        MoveInputCaretToEnd(hwnd);
+        return 0;
+
+    case WM_MOUSEMOVE:
+        if (wParam & (MK_LBUTTON | MK_MBUTTON | MK_RBUTTON))
+            return 0;
+        break;
+
+    case WM_CONTEXTMENU:
+        return 0;
+
+    case WM_PASTE:
+    case WM_CUT:
+    case WM_CLEAR:
+    case WM_UNDO:
+        return 0;
+
+    case WM_SETTEXT:
+    case EM_REPLACESEL:
+    {
+        LRESULT r = CallWindowProcW(g_oldInputEditProc, hwnd, msg, wParam, lParam);
+        MoveInputCaretToEnd(hwnd);
+        return r;
+    }
+    }
+
+    LRESULT r = CallWindowProcW(g_oldInputEditProc, hwnd, msg, wParam, lParam);
+
+    if (msg == WM_CHAR || msg == WM_KEYUP || msg == WM_LBUTTONUP)
+        MoveInputCaretToEnd(hwnd);
+
+    return r;
 }
 
 static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -265,6 +375,13 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 g_serial.open(g_currentPort, kBaudRates[baudSel]);
                 EnableWindow(g_comboPort, FALSE);
                 g_portSelected = true;
+
+                if (g_inputEdit) {
+                    EnableWindow(g_inputEdit, TRUE);
+                    SetFocus(g_inputEdit);
+                    MoveInputCaretToEnd(g_inputEdit);
+                }
+
                 UpdateCloseButtons();
                 RefreshStatus();
             }
@@ -311,12 +428,19 @@ static LRESULT CALLBACK InputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         g_oldInputEditProc = reinterpret_cast<WNDPROC>(
             SetWindowLongPtrW(g_inputEdit, GWLP_WNDPROC,
                 reinterpret_cast<LONG_PTR>(InputEditProc)));
+
+        if (!g_portSelected)
+            EnableWindow(g_inputEdit, FALSE);
+
         SetFocus(g_inputEdit);
         return 0;
     }
 
     case WM_SETFOCUS:
-        SetFocus(g_inputEdit);
+        if (g_portSelected)
+            SetFocus(g_inputEdit);
+        else
+            SetFocus(hwnd);
         return 0;
 
     case WM_INITMENUPOPUP:
@@ -507,7 +631,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     ShowWindow(g_statusWnd, nCmdShow);
     UpdateWindow(g_statusWnd);
 
-    SetForegroundWindow(g_inputWnd);
+    SetForegroundWindow(g_controlWnd);
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
