@@ -9,6 +9,8 @@ add_executable(serial_chat WIN32
     main.cpp
     serial.cpp
     serial.h
+    frame.cpp
+    frame.h
     resources.rc
 )
 
