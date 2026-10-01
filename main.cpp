@@ -34,6 +34,7 @@ namespace
     HWND g_outputEdit = nullptr;
     HWND g_statusTx = nullptr;
     HWND g_statusErr = nullptr;
+    HWND g_debugHead = nullptr;
     HWND g_debugView = nullptr;
 
     std::vector<std::wstring> g_ports;
@@ -197,11 +198,14 @@ static void AppendOutputChar(wchar_t ch)
     }
 }
 
-static HWND CreateFrameView(HWND parent, int x, int y, int w, int h)
+static HWND CreateFrameView(HWND parent, int x, int y, int w, int h, bool scroll)
 {
+    DWORD style = WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY;
+    if (scroll)
+        style |= WS_VSCROLL | WS_HSCROLL | ES_AUTOVSCROLL;
+
     HWND ctl = CreateWindowExW(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
-        WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-        x, y, w, h, parent, nullptr, nullptr, nullptr);
+        style, x, y, w, h, parent, nullptr, nullptr, nullptr);
     SetFont(ctl);
 
     CHARFORMATW cf = {};
@@ -606,12 +610,13 @@ static LRESULT CALLBACK DebugWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
 {
     switch (msg) {
     case WM_CREATE: {
-        CreateLabel(hwnd, L"Отладочное окно", 12, 12, 140, 20);
-
         RECT rc = {};
         GetClientRect(hwnd, &rc);
-        g_debugView = CreateFrameView(hwnd, 12, 40, rc.right - 24, rc.bottom - 52);
-        AppendRichText(g_debugView, frame::fieldNames() + L"\r\n", {});
+
+        g_debugHead = CreateFrameView(hwnd, 12, 12, rc.right - 24, 26, false);
+        AppendRichText(g_debugHead, frame::fieldNames(), {});
+
+        g_debugView = CreateFrameView(hwnd, 12, 44, rc.right - 24, rc.bottom - 56, true);
         return 0;
     }
 
@@ -631,6 +636,7 @@ static LRESULT CALLBACK DebugWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
 
     case WM_DESTROY:
         if (hwnd == g_debugWnd) g_debugWnd = nullptr;
+        g_debugHead = nullptr;
         g_debugView = nullptr;
         UpdateCloseButtons();
         CheckAllWindowsClosed();
