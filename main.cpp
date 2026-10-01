@@ -308,15 +308,63 @@ static void DestroyAllWindows()
     if (g_controlWnd) DestroyWindow(g_controlWnd);
 }
 
+static void CaretToEnd(HWND hwnd)
+{
+    int len = GetWindowTextLengthW(hwnd);
+    SendMessageW(hwnd, EM_SETSEL, len, len);
+}
+
 static LRESULT CALLBACK InputEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    if (msg == WM_CHAR) {
+    switch (msg) {
+    case WM_CHAR: {
+        if (wParam == L'\b' || wParam == 0x7F)
+            return 0;
+
+        CaretToEnd(hwnd);
+
         wchar_t ch = static_cast<wchar_t>(wParam);
         if (ch == L'\r' || ch >= 0x20) {
             if (g_serial.isOpen())
                 SendFrame(ch);
         }
+        break;
     }
+
+    case WM_KEYDOWN:
+    case WM_KEYUP:
+        if (GetKeyState(VK_CONTROL) < 0) {
+            if (wParam == 'V' || wParam == 'X' || wParam == 'Z')
+                return 0;
+        }
+        switch (wParam) {
+        case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN:
+        case VK_HOME: case VK_END: case VK_PRIOR: case VK_NEXT:
+        case VK_DELETE: case VK_BACK:
+            CaretToEnd(hwnd);
+            return 0;
+        }
+        break;
+
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONDBLCLK:
+    case WM_MBUTTONDOWN:
+        CaretToEnd(hwnd);
+        SetFocus(hwnd);
+        return 0;
+
+    case WM_PASTE:
+    case WM_CUT:
+    case WM_CLEAR:
+    case WM_UNDO:
+    case WM_CONTEXTMENU:
+        return 0;
+
+    case WM_SETFOCUS:
+        CaretToEnd(hwnd);
+        break;
+    }
+
     return CallWindowProcW(g_oldInputEditProc, hwnd, msg, wParam, lParam);
 }
 
