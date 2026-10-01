@@ -220,19 +220,6 @@ namespace frame {
         }
     }
 
-    static void appendBitValues(std::wstring &out, std::vector<bool> &underline,
-                                const std::vector<bool> &bits, const std::vector<bool> &inserted) {
-        size_t n = (bits.size() + 7) / 8 * 8;
-        for (size_t i = 0; i < n; i++) {
-            if (i % 8 == 0 && i) {
-                out += L',';
-                underline.push_back(false);
-            }
-            out += (i < bits.size() && bits[i]) ? L'1' : L'0';
-            underline.push_back(i < inserted.size() && inserted[i]);
-        }
-    }
-
     FrameView makeView(const Frame &f, const StuffResult &s) {
         FrameView view;
 
@@ -246,11 +233,65 @@ namespace frame {
         view.before += L' ';
         appendByteValues(view.before, &f.fcs, 1);
 
+        size_t dataBits = f.data.size() * 8;
+        const size_t starts[4] = { 0, 8, 16, 16 + dataBits };
+        const size_t ends[4] = { 8, 16, 16 + dataBits, 24 + dataBits };
+
+        std::vector<std::wstring> groups[4];
+        std::vector<std::vector<bool> > masks[4];
+
+        size_t orig = 0;
+        for (size_t j = 0; j < s.bits.size(); j++) {
+            bool inserted = j < s.inserted.size() && s.inserted[j];
+            size_t owner = inserted && orig > 0 ? orig - 1 : orig;
+
+            int field = -1;
+            for (int k = 0; k < 4; k++) {
+                if (owner >= starts[k] && owner < ends[k]) {
+                    field = k;
+                    break;
+                }
+            }
+
+            if (field < 0) {
+                if (!inserted)
+                    orig++;
+                continue;
+            }
+
+            size_t group = (owner - starts[field]) / 8;
+            while (groups[field].size() <= group) {
+                groups[field].push_back(std::wstring());
+                masks[field].push_back(std::vector<bool>());
+            }
+
+            groups[field][group] += s.bits[j] ? L'1' : L'0';
+            masks[field][group].push_back(inserted);
+
+            if (!inserted)
+                orig++;
+        }
+
         appendByteValues(view.after, FLAG, FLAG_LEN);
         view.afterUnderline.assign(view.after.size(), false);
-        view.after += L' ';
-        view.afterUnderline.push_back(false);
-        appendBitValues(view.after, view.afterUnderline, s.bits, s.inserted);
+
+        for (int k = 0; k < 4; k++) {
+            if (groups[k].empty())
+                continue;
+
+            view.after += L' ';
+            view.afterUnderline.push_back(false);
+
+            for (size_t g = 0; g < groups[k].size(); g++) {
+                if (g) {
+                    view.after += L',';
+                    view.afterUnderline.push_back(false);
+                }
+                view.after += groups[k][g];
+                for (size_t b = 0; b < masks[k][g].size(); b++)
+                    view.afterUnderline.push_back(masks[k][g][b]);
+            }
+        }
 
         return view;
     }
