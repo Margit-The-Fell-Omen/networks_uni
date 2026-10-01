@@ -226,10 +226,13 @@ namespace frame {
         return out;
     }
 
-    static void appendAligned(std::wstring &out, const std::wstring &value, size_t width) {
-        for (size_t i = value.size(); i < width; i++)
+    static void appendCentered(std::wstring &out, const std::wstring &value, size_t width) {
+        size_t left = value.size() < width ? (width - value.size()) / 2 : 0;
+        for (size_t i = 0; i < left; i++)
             out += L' ';
         out += value;
+        for (size_t i = left + value.size(); i < width; i++)
+            out += L' ';
     }
 
     std::wstring fieldNames() {
@@ -237,7 +240,7 @@ namespace frame {
         for (size_t k = 0; k < FIELD_COUNT; k++) {
             if (k)
                 out += L' ';
-            appendAligned(out, FIELD_NAMES[k], COLUMN_WIDTH[k]);
+            appendCentered(out, FIELD_NAMES[k], COLUMN_WIDTH[k]);
         }
         return out;
     }
@@ -245,15 +248,15 @@ namespace frame {
     FrameView makeView(const Frame &f, const StuffResult &s) {
         FrameView view;
 
-        appendAligned(view.before, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
+        appendCentered(view.before, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
         view.before += L' ';
-        appendAligned(view.before, valueString(&f.destination, 1), COLUMN_WIDTH[1]);
+        appendCentered(view.before, valueString(&f.destination, 1), COLUMN_WIDTH[1]);
         view.before += L' ';
-        appendAligned(view.before, valueString(&f.source, 1), COLUMN_WIDTH[2]);
+        appendCentered(view.before, valueString(&f.source, 1), COLUMN_WIDTH[2]);
         view.before += L' ';
-        appendAligned(view.before, valueString(f.data.data(), f.data.size()), COLUMN_WIDTH[3]);
+        appendCentered(view.before, valueString(f.data.data(), f.data.size()), COLUMN_WIDTH[3]);
         view.before += L' ';
-        appendAligned(view.before, valueString(&f.fcs, 1), COLUMN_WIDTH[4]);
+        appendCentered(view.before, valueString(&f.fcs, 1), COLUMN_WIDTH[4]);
 
         size_t dataBits = f.data.size() * 8;
         const size_t starts[4] = { 0, 8, 16, 16 + dataBits };
@@ -309,14 +312,17 @@ namespace frame {
             }
         }
 
-        appendAligned(view.after, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
+        appendCentered(view.after, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
         view.afterUnderline.assign(view.after.size(), false);
 
         for (int k = 0; k < 4; k++) {
             view.after += L' ';
             view.afterUnderline.push_back(false);
 
-            for (size_t i = fields[k].size(); i < COLUMN_WIDTH[k + 1]; i++) {
+            size_t width = COLUMN_WIDTH[k + 1];
+            size_t left = fields[k].size() < width ? (width - fields[k].size()) / 2 : 0;
+
+            for (size_t i = 0; i < left; i++) {
                 view.after += L' ';
                 view.afterUnderline.push_back(false);
             }
@@ -324,6 +330,11 @@ namespace frame {
             view.after += fields[k];
             for (size_t b = 0; b < fieldMasks[k].size(); b++)
                 view.afterUnderline.push_back(static_cast<bool>(fieldMasks[k][b]));
+
+            for (size_t i = left + fields[k].size(); i < width; i++) {
+                view.after += L' ';
+                view.afterUnderline.push_back(false);
+            }
         }
 
         return view;
