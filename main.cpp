@@ -200,26 +200,20 @@ static void AppendOutputChar(wchar_t ch)
 static HWND CreateFrameView(HWND parent, int x, int y, int w, int h)
 {
     HWND ctl = CreateWindowExW(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
-        WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
         x, y, w, h, parent, nullptr, nullptr, nullptr);
     SetFont(ctl);
-
-    LOGFONTW lf = {};
-    GetObjectW(g_font, sizeof(lf), &lf);
-
-    HDC dc = GetDC(nullptr);
-    int dpi = GetDeviceCaps(dc, LOGPIXELSY);
-    ReleaseDC(nullptr, dc);
 
     CHARFORMATW cf = {};
     cf.cbSize = sizeof(cf);
     cf.dwMask = CFM_FACE | CFM_SIZE | CFM_CHARSET;
-    cf.yHeight = MulDiv(-lf.lfHeight, 1440, dpi);
-    cf.bCharSet = lf.lfCharSet;
-    lstrcpynW(cf.szFaceName, lf.lfFaceName, LF_FACESIZE);
+    cf.yHeight = 10 * 20;
+    cf.bCharSet = DEFAULT_CHARSET;
+    lstrcpynW(cf.szFaceName, L"Consolas", LF_FACESIZE);
     SendMessageW(ctl, EM_SETCHARFORMAT, SCF_DEFAULT, reinterpret_cast<LPARAM>(&cf));
 
     SendMessageW(ctl, EM_EXLIMITTEXT, static_cast<WPARAM>(0x7FFFFFFE), 0);
+    SendMessageW(ctl, EM_SETTARGETDEVICE, 0, 0);
     return ctl;
 }
 
@@ -253,6 +247,7 @@ static void AppendRichText(HWND edit, const std::wstring& text, const std::vecto
     SendMessageW(edit, EM_SETREADONLY, TRUE, 0);
     SendMessageW(edit, EM_SCROLLCARET, 0, 0);
     SendMessageW(edit, WM_VSCROLL, SB_BOTTOM, 0);
+    SendMessageW(edit, WM_HSCROLL, SB_LEFT, 0);
 }
 
 static std::wstring FromUtf8(const std::vector<uint8_t>& data)
@@ -287,8 +282,16 @@ static void SendFrame(wchar_t ch)
     g_serial.sendBytes(bytes.data(), bytes.size());
 
     frame::FrameView view = frame::makeView(f, s);
-    AppendRichText(g_debugView, view.before + L"\r\n", {});
-    AppendRichText(g_debugView, view.after + L"\r\n", view.afterUnderline);
+
+    std::wstring text = view.before + L"\r\n" + view.after + L"\r\n";
+    std::vector<bool> mask(view.before.size(), false);
+    mask.push_back(false);
+    mask.push_back(false);
+    mask.insert(mask.end(), view.afterUnderline.begin(), view.afterUnderline.end());
+    mask.push_back(false);
+    mask.push_back(false);
+
+    AppendRichText(g_debugView, text, mask);
 }
 
 static void RefreshStatus()
@@ -605,7 +608,9 @@ static LRESULT CALLBACK DebugWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
     case WM_CREATE: {
         CreateLabel(hwnd, L"Отладочное окно", 12, 12, 140, 20);
 
-        g_debugView = CreateFrameView(hwnd, 12, 40, 396, 200);
+        RECT rc = {};
+        GetClientRect(hwnd, &rc);
+        g_debugView = CreateFrameView(hwnd, 12, 40, rc.right - 24, rc.bottom - 52);
         AppendRichText(g_debugView, frame::fieldNames() + L"\r\n", {});
         return 0;
     }
@@ -698,11 +703,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     g_outputWnd = CreateWindowExW(0, kOutputClass, L"Вывод сообщений",
         WindowStyle, x + 420, 410, 500, 370,
         nullptr, nullptr, hInstance, nullptr);
+    int screenW = GetSystemMetrics(SM_CXSCREEN);
+    int screenH = GetSystemMetrics(SM_CYSCREEN);
+    int debugX = x;
+    int debugY = 790;
+    int debugW = screenW - 80;
+    int debugH = screenH - debugY - 60;
+    if (debugH < 200) {
+        debugY = 610;
+        debugW = 420;
+        debugH = 290;
+    }
+
     g_statusWnd = CreateWindowExW(0, kStatusClass, L"Состояние",
         WindowStyle, x, 330, 320, 100,
         nullptr, nullptr, hInstance, nullptr);
     g_debugWnd = CreateWindowExW(0, kDebugClass, L"Отладка",
-        WindowStyle, x, 610, 420, 290,
+        WindowStyle, debugX, debugY, debugW, debugH,
         nullptr, nullptr, hInstance, nullptr);
 
     if (!g_controlWnd || !g_inputWnd || !g_outputWnd || !g_statusWnd || !g_debugWnd) {

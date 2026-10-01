@@ -207,31 +207,53 @@ namespace frame {
         }
     }
 
-    std::wstring fieldNames() {
-        return L"Флаг Адрес назначения Адрес источника Данные FCS";
-    }
+    static const size_t FIELD_COUNT = 5;
 
-    static void appendByteValues(std::wstring &out, const uint8_t *p, size_t n) {
+    static const wchar_t *FIELD_NAMES[FIELD_COUNT] = {
+        L"Флаг", L"Адрес назначения", L"Адрес источника", L"Данные", L"FCS"
+    };
+
+    constexpr size_t COLUMN_WIDTH[FIELD_COUNT] = { FLAG_LEN * 9 - 1, 16, 15, 17, 8 };
+
+    static std::wstring valueString(const uint8_t *p, size_t n) {
+        std::wstring out;
         for (size_t i = 0; i < n; i++) {
             if (i)
                 out += L',';
             for (int k = 7; k >= 0; k--)
                 out += ((p[i] >> k) & 1) ? L'1' : L'0';
         }
+        return out;
+    }
+
+    static void appendAligned(std::wstring &out, const std::wstring &value, size_t width) {
+        for (size_t i = value.size(); i < width; i++)
+            out += L' ';
+        out += value;
+    }
+
+    std::wstring fieldNames() {
+        std::wstring out;
+        for (size_t k = 0; k < FIELD_COUNT; k++) {
+            if (k)
+                out += L' ';
+            appendAligned(out, FIELD_NAMES[k], COLUMN_WIDTH[k]);
+        }
+        return out;
     }
 
     FrameView makeView(const Frame &f, const StuffResult &s) {
         FrameView view;
 
-        appendByteValues(view.before, FLAG, FLAG_LEN);
+        appendAligned(view.before, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
         view.before += L' ';
-        appendByteValues(view.before, &f.destination, 1);
+        appendAligned(view.before, valueString(&f.destination, 1), COLUMN_WIDTH[1]);
         view.before += L' ';
-        appendByteValues(view.before, &f.source, 1);
+        appendAligned(view.before, valueString(&f.source, 1), COLUMN_WIDTH[2]);
         view.before += L' ';
-        appendByteValues(view.before, f.data.data(), f.data.size());
+        appendAligned(view.before, valueString(f.data.data(), f.data.size()), COLUMN_WIDTH[3]);
         view.before += L' ';
-        appendByteValues(view.before, &f.fcs, 1);
+        appendAligned(view.before, valueString(&f.fcs, 1), COLUMN_WIDTH[4]);
 
         size_t dataBits = f.data.size() * 8;
         const size_t starts[4] = { 0, 8, 16, 16 + dataBits };
@@ -272,25 +294,36 @@ namespace frame {
                 orig++;
         }
 
-        appendByteValues(view.after, FLAG, FLAG_LEN);
+        std::wstring fields[4];
+        std::vector<bool> fieldMasks[4];
+
+        for (int k = 0; k < 4; k++) {
+            for (size_t g = 0; g < groups[k].size(); g++) {
+                if (g) {
+                    fields[k] += L',';
+                    fieldMasks[k].push_back(false);
+                }
+                fields[k] += groups[k][g];
+                for (size_t b = 0; b < masks[k][g].size(); b++)
+                    fieldMasks[k].push_back(static_cast<bool>(masks[k][g][b]));
+            }
+        }
+
+        appendAligned(view.after, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
         view.afterUnderline.assign(view.after.size(), false);
 
         for (int k = 0; k < 4; k++) {
-            if (groups[k].empty())
-                continue;
-
             view.after += L' ';
             view.afterUnderline.push_back(false);
 
-            for (size_t g = 0; g < groups[k].size(); g++) {
-                if (g) {
-                    view.after += L',';
-                    view.afterUnderline.push_back(false);
-                }
-                view.after += groups[k][g];
-                for (size_t b = 0; b < masks[k][g].size(); b++)
-                    view.afterUnderline.push_back(masks[k][g][b]);
+            for (size_t i = fields[k].size(); i < COLUMN_WIDTH[k + 1]; i++) {
+                view.after += L' ';
+                view.afterUnderline.push_back(false);
             }
+
+            view.after += fields[k];
+            for (size_t b = 0; b < fieldMasks[k].size(); b++)
+                view.afterUnderline.push_back(static_cast<bool>(fieldMasks[k][b]));
         }
 
         return view;
