@@ -1,8 +1,10 @@
 #include <windows.h>
+#include <richedit.h>
 #include <string>
 #include <vector>
 
 #include "serial.h"
+#include "frame.h"
 
 namespace
 {
@@ -10,6 +12,7 @@ namespace
     const wchar_t* kInputClass = L"SerialChatInput";
     const wchar_t* kOutputClass = L"SerialChatOutput";
     const wchar_t* kStatusClass = L"SerialChatStatus";
+    const wchar_t* kDebugClass = L"SerialChatDebug";
 
     const DWORD kBaudRates[] = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200 };
     const int kBaudCount = 8;
@@ -23,6 +26,7 @@ namespace
     HWND g_inputWnd = nullptr;
     HWND g_outputWnd = nullptr;
     HWND g_statusWnd = nullptr;
+    HWND g_debugWnd = nullptr;
 
     HWND g_comboPort = nullptr;
     HWND g_comboBaud = nullptr;
@@ -30,9 +34,13 @@ namespace
     HWND g_outputEdit = nullptr;
     HWND g_statusTx = nullptr;
     HWND g_statusErr = nullptr;
+    HWND g_statusView = nullptr;
+    HWND g_debugView = nullptr;
 
     std::vector<std::wstring> g_ports;
     std::wstring g_currentPort;
+
+    frame::Receiver g_receiver;
 
     WNDPROC g_oldInputEditProc = nullptr;
     HFONT g_font = nullptr;
@@ -64,6 +72,7 @@ static int AliveCount()
     if (g_inputWnd)   ++n;
     if (g_outputWnd)  ++n;
     if (g_statusWnd)  ++n;
+    if (g_debugWnd)   ++n;
     return n;
 }
 
@@ -180,6 +189,102 @@ static void AppendOutputChar(wchar_t ch)
     }
 }
 
+static HWND CreateFrameView(HWND parent, int x, int y, int w, int h)
+{
+    HWND ctl = CreateWindowExW(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+        x, y, w, h, parent, nullptr, nullptr, nullptr);
+    SetFont(ctl);
+
+    LOGFONTW lf = {};
+    GetObjectW(g_font, sizeof(lf), &lf);
+
+    HDC dc = GetDC(nullptr);
+    int dpi = GetDeviceCaps(dc, LOGPIXELSY);
+    ReleaseDC(nullptr, dc);
+
+    CHARFORMATW cf = {};
+    cf.cbSize = sizeof(cf);
+    cf.dwMask = CFM_FACE | CFM_SIZE | CFM_CHARSET;
+    cf.yHeight = MulDiv(-lf.lfHeight, 1440, dpi);
+    cf.bCharSet = lf.lfCharSet;
+    lstrcpynW(cf.szFaceName, lf.lfFaceName, LF_FACESIZE);
+    SendMessageW(ctl, EM_SETCHARFORMAT, SCF_DEFAULT, reinterpret_cast<LPARAM>(&cf));
+
+    SendMessageW(ctl, EM_EXLIMITTEXT, static_cast<WPARAM>(0x7FFFFFFE), 0);
+    return ctl;
+}
+
+static void AppendRichText(HWND edit, const std::wstring& text, const std::vector<bool>& underline)
+{
+    if (!edit)
+        return;
+
+    int len = GetWindowTextLengthW(edit);
+    SendMessageW(edit, EM_SETREADONLY, FALSE, 0);
+    SendMessageW(edit, EM_SETSEL, len, len);
+
+    size_t i = 0;
+    while (i < text.size()) {
+        bool u = i < underline.size() && underline[i];
+        size_t j = i;
+        while (j < text.size() && (j < underline.size() && underline[j]) == u)
+            ++j;
+
+        CHARFORMATW cf = {};
+        cf.cbSize = sizeof(cf);
+        cf.dwMask = CFM_UNDERLINE;
+        cf.dwEffects = u ? CFE_UNDERLINE : 0;
+        SendMessageW(edit, EM_SETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&cf));
+
+        std::wstring run = text.substr(i, j - i);
+        SendMessageW(edit, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(run.c_str()));
+        i = j;
+    }
+
+    SendMessageW(edit, EM_SETREADONLY, TRUE, 0);
+    SendMessageW(edit, EM_SCROLLCARET, 0, 0);
+    SendMessageW(edit, WM_VSCROLL, SB_BOTTOM, 0);
+}
+
+static std::wstring FromUtf8(const std::vector<uint8_t>& data)
+{
+    if (data.empty())
+        return std::wstring();
+
+    int n = MultiByteToWideChar(CP_UTF8, 0, reinterpret_cast<const char*>(data.data()),
+        static_cast<int>(data.size()), nullptr, 0);
+    std::wstring text(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, reinterpret_cast<const char*>(data.data()),
+        static_cast<int>(data.size()), text.data(), n);
+    return text;
+}
+
+static void SendFrame(wchar_t ch)
+{
+    if (!g_serial.isOpen())
+        return;
+
+    char buf[4];
+    int n = WideCharToMultiByte(CP_UTF8, 0, &ch, 1, buf, 4, nullptr, nullptr);
+    if (n <= 0)
+        return;
+
+    frame::Frame f;
+    f.data.assign(reinterpret_cast<uint8_t*>(buf), reinterpret_cast<uint8_t*>(buf) + n);
+
+    frame::StuffResult s = frame::stuff(frame::serializeBody(f));
+    std::vector<uint8_t> bytes = s.bytes;
+    bytes.insert(bytes.end(), frame::FLAG, frame::FLAG + frame::FLAG_LEN);
+    g_serial.sendBytes(bytes.data(), bytes.size());
+
+    frame::FrameView view = frame::makeView(f, s);
+    AppendRichText(g_statusView, view.before + L"\r\n", {});
+    AppendRichText(g_statusView, view.after + L"\r\n", view.afterUnderline);
+    AppendRichText(g_debugView, view.before + L"\r\n", {});
+    AppendRichText(g_debugView, view.after + L"\r\n", view.afterUnderline);
+}
+
 static void RefreshStatus()
 {
     std::wstring tx = L"Передано байт: " + std::to_wstring(g_serial.transmitted());
@@ -190,12 +295,13 @@ static void RefreshStatus()
 
 static void CheckAllWindowsClosed()
 {
-    if (!g_controlWnd && !g_inputWnd && !g_outputWnd && !g_statusWnd)
+    if (!g_controlWnd && !g_inputWnd && !g_outputWnd && !g_statusWnd && !g_debugWnd)
         PostQuitMessage(0);
 }
 
 static void DestroyAllWindows()
 {
+    if (g_debugWnd)   DestroyWindow(g_debugWnd);
     if (g_outputWnd)  DestroyWindow(g_outputWnd);
     if (g_inputWnd)   DestroyWindow(g_inputWnd);
     if (g_statusWnd)  DestroyWindow(g_statusWnd);
@@ -208,7 +314,7 @@ static LRESULT CALLBACK InputEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         wchar_t ch = static_cast<wchar_t>(wParam);
         if (ch == L'\r' || ch >= 0x20) {
             if (g_serial.isOpen())
-                g_serial.send(ch);
+                SendFrame(ch);
         }
     }
     return CallWindowProcW(g_oldInputEditProc, hwnd, msg, wParam, lParam);
@@ -263,6 +369,7 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 if (baudSel == CB_ERR)
                     baudSel = kDefaultBaudIndex;
                 g_serial.open(g_currentPort, kBaudRates[baudSel]);
+                g_receiver = frame::Receiver();
                 EnableWindow(g_comboPort, FALSE);
                 g_portSelected = true;
                 UpdateCloseButtons();
@@ -273,8 +380,10 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
         if (ctl == g_comboBaud && code == CBN_SELCHANGE) {
             int sel = static_cast<int>(SendMessageW(g_comboBaud, CB_GETCURSEL, 0, 0));
-            if (sel != CB_ERR && g_serial.isOpen())
+            if (sel != CB_ERR && g_serial.isOpen()) {
                 g_serial.open(g_currentPort, kBaudRates[sel]);
+                g_receiver = frame::Receiver();
+            }
             RefreshStatus();
             return 0;
         }
@@ -359,9 +468,16 @@ static LRESULT CALLBACK OutputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         return 0;
     }
 
-    case WM_APP_RX:
-        AppendOutputChar(static_cast<wchar_t>(wParam));
+    case WM_APP_RX: {
+        uint8_t byte = static_cast<uint8_t>(wParam);
+        std::vector<frame::Frame> frames = g_receiver.feed(&byte, 1);
+        for (size_t i = 0; i < frames.size(); ++i) {
+            std::wstring text = FromUtf8(frames[i].data);
+            for (size_t k = 0; k < text.size(); ++k)
+                AppendOutputChar(text[k]);
+        }
         return 0;
+    }
 
     case WM_INITMENUPOPUP:
         if (lParam == 0) {
@@ -394,6 +510,10 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     switch (msg) {
     case WM_CREATE: {
         g_statusTx = CreateLabel(hwnd, L"Передано байт: 0", 16, 16, 150, 22);
+        g_statusErr = CreateLabel(hwnd, L"", 16, 40, 340, 20);
+
+        g_statusView = CreateFrameView(hwnd, 12, 66, 396, 170);
+        AppendRichText(g_statusView, frame::fieldNames() + L"\r\n", {});
 
         SetTimer(hwnd, 1, 1000, nullptr);
         RefreshStatus();
@@ -421,7 +541,33 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
     case WM_DESTROY:
         if (hwnd == g_statusWnd) g_statusWnd = nullptr;
+        g_statusView = nullptr;
         UpdateCloseButtons();
+        CheckAllWindowsClosed();
+        return 0;
+    }
+
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static LRESULT CALLBACK DebugWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg) {
+    case WM_CREATE: {
+        CreateLabel(hwnd, L"Отладочное окно", 12, 12, 140, 20);
+
+        g_debugView = CreateFrameView(hwnd, 12, 40, 396, 200);
+        AppendRichText(g_debugView, frame::fieldNames() + L"\r\n", {});
+        return 0;
+    }
+
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+
+    case WM_DESTROY:
+        if (hwnd == g_debugWnd) g_debugWnd = nullptr;
+        g_debugView = nullptr;
         CheckAllWindowsClosed();
         return 0;
     }
@@ -459,12 +605,22 @@ static bool RegisterClasses(HINSTANCE inst)
     if (!RegisterClassExW(&wc))
         return false;
 
+    wc.lpfnWndProc = DebugWndProc;
+    wc.lpszClassName = kDebugClass;
+    if (!RegisterClassExW(&wc))
+        return false;
+
     return true;
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 {
     g_font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+
+    if (!LoadLibraryW(L"Msftedit.dll")) {
+        MessageBoxW(nullptr, L"Не удалось загрузить Msftedit.dll.", L"Ошибка", MB_ICONERROR);
+        return 1;
+    }
 
     if (!RegisterClasses(hInstance)) {
         MessageBoxW(nullptr, L"Не удалось зарегистрировать классы окон.", L"Ошибка", MB_ICONERROR);
@@ -483,19 +639,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         WindowStyle, x + 420, 410, 500, 370,
         nullptr, nullptr, hInstance, nullptr);
     g_statusWnd = CreateWindowExW(0, kStatusClass, L"Состояние",
-        WindowStyle, x, 330, 320, 100,
+        WindowStyle, x, 300, 420, 290,
+        nullptr, nullptr, hInstance, nullptr);
+    g_debugWnd = CreateWindowExW(0, kDebugClass, L"Отладка",
+        WindowStyle, x, 610, 420, 290,
         nullptr, nullptr, hInstance, nullptr);
 
-    if (!g_controlWnd || !g_inputWnd || !g_outputWnd || !g_statusWnd) {
+    if (!g_controlWnd || !g_inputWnd || !g_outputWnd || !g_statusWnd || !g_debugWnd) {
         MessageBoxW(nullptr, L"Не удалось создать окна.", L"Ошибка", MB_ICONERROR);
         return 1;
     }
 
     UpdateCloseButtons();
 
-    g_serial.setRxCallback([](wchar_t ch) {
+    g_serial.setRxCallback([](uint8_t b) {
         if (g_outputWnd)
-            PostMessageW(g_outputWnd, WM_APP_RX, static_cast<WPARAM>(ch), 0);
+            PostMessageW(g_outputWnd, WM_APP_RX, static_cast<WPARAM>(b), 0);
         });
 
     ShowWindow(g_controlWnd, nCmdShow);
@@ -506,6 +665,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     UpdateWindow(g_outputWnd);
     ShowWindow(g_statusWnd, nCmdShow);
     UpdateWindow(g_statusWnd);
+    ShowWindow(g_debugWnd, nCmdShow);
+    UpdateWindow(g_debugWnd);
 
     SetForegroundWindow(g_inputWnd);
 
