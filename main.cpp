@@ -34,7 +34,6 @@ namespace
     HWND g_outputEdit = nullptr;
     HWND g_statusTx = nullptr;
     HWND g_statusErr = nullptr;
-    HWND g_statusView = nullptr;
     HWND g_debugView = nullptr;
 
     std::vector<std::wstring> g_ports;
@@ -139,6 +138,15 @@ static void UpdateCloseButtons()
             UINT flags = g_portSelected ? MF_ENABLED : MF_GRAYED;
             EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | flags);
             DrawMenuBar(g_statusWnd);
+        }
+    }
+
+    if (g_debugWnd) {
+        HMENU menu = GetSystemMenu(g_debugWnd, FALSE);
+        if (menu) {
+            UINT flags = g_portSelected ? MF_ENABLED : MF_GRAYED;
+            EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | flags);
+            DrawMenuBar(g_debugWnd);
         }
     }
 }
@@ -279,8 +287,6 @@ static void SendFrame(wchar_t ch)
     g_serial.sendBytes(bytes.data(), bytes.size());
 
     frame::FrameView view = frame::makeView(f, s);
-    AppendRichText(g_statusView, view.before + L"\r\n", {});
-    AppendRichText(g_statusView, view.after + L"\r\n", view.afterUnderline);
     AppendRichText(g_debugView, view.before + L"\r\n", {});
     AppendRichText(g_debugView, view.after + L"\r\n", view.afterUnderline);
 }
@@ -558,10 +564,6 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     switch (msg) {
     case WM_CREATE: {
         g_statusTx = CreateLabel(hwnd, L"Передано байт: 0", 16, 16, 150, 22);
-        g_statusErr = CreateLabel(hwnd, L"", 16, 40, 340, 20);
-
-        g_statusView = CreateFrameView(hwnd, 12, 66, 396, 170);
-        AppendRichText(g_statusView, frame::fieldNames() + L"\r\n", {});
 
         SetTimer(hwnd, 1, 1000, nullptr);
         RefreshStatus();
@@ -589,7 +591,6 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
     case WM_DESTROY:
         if (hwnd == g_statusWnd) g_statusWnd = nullptr;
-        g_statusView = nullptr;
         UpdateCloseButtons();
         CheckAllWindowsClosed();
         return 0;
@@ -609,13 +610,24 @@ static LRESULT CALLBACK DebugWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         return 0;
     }
 
+    case WM_INITMENUPOPUP:
+        if (lParam == 0) {
+            HMENU menu = GetSystemMenu(hwnd, FALSE);
+            if (menu && !g_portSelected)
+                EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | MF_GRAYED);
+        }
+        break;
+
     case WM_CLOSE:
+        if (!g_portSelected)
+            return 0;
         DestroyWindow(hwnd);
         return 0;
 
     case WM_DESTROY:
         if (hwnd == g_debugWnd) g_debugWnd = nullptr;
         g_debugView = nullptr;
+        UpdateCloseButtons();
         CheckAllWindowsClosed();
         return 0;
     }
@@ -687,7 +699,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         WindowStyle, x + 420, 410, 500, 370,
         nullptr, nullptr, hInstance, nullptr);
     g_statusWnd = CreateWindowExW(0, kStatusClass, L"Состояние",
-        WindowStyle, x, 300, 420, 290,
+        WindowStyle, x, 330, 320, 100,
         nullptr, nullptr, hInstance, nullptr);
     g_debugWnd = CreateWindowExW(0, kDebugClass, L"Отладка",
         WindowStyle, x, 610, 420, 290,
