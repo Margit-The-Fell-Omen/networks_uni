@@ -39,8 +39,12 @@ namespace
 
     std::vector<std::wstring> g_ports;
     std::wstring g_currentPort;
+    std::wstring g_pendingText;
 
     frame::Receiver g_receiver;
+
+    const COLORREF kTxColor = RGB(0, 0, 0);
+    const COLORREF kRxColor = RGB(0, 0, 200);
 
     WNDPROC g_oldInputEditProc = nullptr;
     HFONT g_font = nullptr;
@@ -221,7 +225,7 @@ static HWND CreateFrameView(HWND parent, int x, int y, int w, int h, bool scroll
     return ctl;
 }
 
-static void AppendRichText(HWND edit, const std::wstring& text, const std::vector<bool>& underline)
+static void AppendRichText(HWND edit, const std::wstring& text, const std::vector<bool>& underline, COLORREF color)
 {
     if (!edit)
         return;
@@ -239,8 +243,9 @@ static void AppendRichText(HWND edit, const std::wstring& text, const std::vecto
 
         CHARFORMATW cf = {};
         cf.cbSize = sizeof(cf);
-        cf.dwMask = CFM_UNDERLINE;
+        cf.dwMask = CFM_UNDERLINE | CFM_COLOR;
         cf.dwEffects = u ? CFE_UNDERLINE : 0;
+        cf.crTextColor = color;
         SendMessageW(edit, EM_SETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&cf));
 
         std::wstring run = text.substr(i, j - i);
@@ -267,35 +272,56 @@ static std::wstring FromUtf8(const std::vector<uint8_t>& data)
     return text;
 }
 
-static void SendFrame(wchar_t ch)
+static void AppendFrameView(HWND view, const frame::FrameView& frameView, COLORREF color)
+{
+    std::wstring text = frameView.before + L"\r\n" + frameView.after + L"\r\n";
+    std::vector<bool> mask(frameView.before.size(), false);
+    mask.push_back(false);
+    mask.push_back(false);
+    mask.insert(mask.end(), frameView.afterUnderline.begin(), frameView.afterUnderline.end());
+    mask.push_back(false);
+    mask.push_back(false);
+
+    AppendRichText(view, text, mask, color);
+}
+
+static void SendFrameData(const std::vector<uint8_t>& data)
 {
     if (!g_serial.isOpen())
         return;
 
-    char buf[4];
-    int n = WideCharToMultiByte(CP_UTF8, 0, &ch, 1, buf, 4, nullptr, nullptr);
-    if (n <= 0)
-        return;
-
     frame::Frame f;
-    f.data.assign(reinterpret_cast<uint8_t*>(buf), reinterpret_cast<uint8_t*>(buf) + n);
+    f.data = data;
 
     frame::StuffResult s = frame::stuff(frame::serializeBody(f));
     std::vector<uint8_t> bytes = s.bytes;
     bytes.insert(bytes.end(), frame::FLAG, frame::FLAG + frame::FLAG_LEN);
     g_serial.sendBytes(bytes.data(), bytes.size());
 
-    frame::FrameView view = frame::makeView(f, s);
+    if (g_debugView)
+        AppendFrameView(g_debugView, frame::makeView(f, s), kTxColor);
+}
 
-    std::wstring text = view.before + L"\r\n" + view.after + L"\r\n";
-    std::vector<bool> mask(view.before.size(), false);
-    mask.push_back(false);
-    mask.push_back(false);
-    mask.insert(mask.end(), view.afterUnderline.begin(), view.afterUnderline.end());
-    mask.push_back(false);
-    mask.push_back(false);
+static void SendLine(const std::wstring& line)
+{
+    std::wstring text = line + L"\r";
+    std::vector<uint8_t> current;
 
-    AppendRichText(g_debugView, text, mask);
+    for (size_t i = 0; i < text.size(); i++) {
+        char buf[4];
+        int n = WideCharToMultiByte(CP_UTF8, 0, &text[i], 1, buf, 4, nullptr, nullptr);
+        if (n <= 0)
+            continue;
+
+        if (current.size() + n > frame::MAX_DATA_LEN) {
+            SendFrameData(current);
+            current.clear();
+        }
+        current.insert(current.end(), reinterpret_cast<uint8_t*>(buf), reinterpret_cast<uint8_t*>(buf) + n);
+    }
+
+    if (!current.empty())
+        SendFrameData(current);
 }
 
 static void RefreshStatus()
@@ -337,9 +363,12 @@ static LRESULT CALLBACK InputEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         CaretToEnd(hwnd);
 
         wchar_t ch = static_cast<wchar_t>(wParam);
-        if (ch == L'\r' || ch >= 0x20) {
-            if (g_serial.isOpen())
-                SendFrame(ch);
+        if (ch == L'\r') {
+            SendLine(g_pendingText);
+            g_pendingText.clear();
+        }
+        else if (ch >= 0x20) {
+            g_pendingText += ch;
         }
         break;
     }
@@ -431,6 +460,7 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                     baudSel = kDefaultBaudIndex;
                 g_serial.open(g_currentPort, kBaudRates[baudSel]);
                 g_receiver = frame::Receiver();
+                g_pendingText.clear();
                 EnableWindow(g_comboPort, FALSE);
                 g_portSelected = true;
                 UpdateCloseButtons();
@@ -536,6 +566,11 @@ static LRESULT CALLBACK OutputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             std::wstring text = FromUtf8(frames[i].data);
             for (size_t k = 0; k < text.size(); ++k)
                 AppendOutputChar(text[k]);
+
+            if (g_debugView) {
+                frame::StuffResult s = frame::stuff(frame::serializeBody(frames[i]));
+                AppendFrameView(g_debugView, frame::makeView(frames[i], s), kRxColor);
+            }
         }
         return 0;
     }
@@ -614,7 +649,7 @@ static LRESULT CALLBACK DebugWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         GetClientRect(hwnd, &rc);
 
         g_debugHead = CreateFrameView(hwnd, 12, 12, rc.right - 24, 26, false);
-        AppendRichText(g_debugHead, frame::fieldNames(), {});
+        AppendRichText(g_debugHead, frame::fieldNames(), {}, kTxColor);
 
         g_debugView = CreateFrameView(hwnd, 12, 44, rc.right - 24, rc.bottom - 56, true);
         return 0;
