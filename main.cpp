@@ -12,7 +12,6 @@ namespace
     const wchar_t* kInputClass = L"SerialChatInput";
     const wchar_t* kOutputClass = L"SerialChatOutput";
     const wchar_t* kStatusClass = L"SerialChatStatus";
-    const wchar_t* kDebugClass = L"SerialChatDebug";
 
     const DWORD kBaudRates[] = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200 };
     const int kBaudCount = 8;
@@ -26,16 +25,14 @@ namespace
     HWND g_inputWnd = nullptr;
     HWND g_outputWnd = nullptr;
     HWND g_statusWnd = nullptr;
-    HWND g_debugWnd = nullptr;
 
     HWND g_comboPort = nullptr;
     HWND g_comboBaud = nullptr;
     HWND g_inputEdit = nullptr;
     HWND g_outputEdit = nullptr;
     HWND g_statusTx = nullptr;
-    HWND g_statusErr = nullptr;
-    HWND g_debugHead = nullptr;
-    HWND g_debugView = nullptr;
+    HWND g_statusHead = nullptr;
+    HWND g_statusView = nullptr;
 
     std::vector<std::wstring> g_ports;
     std::wstring g_currentPort;
@@ -76,7 +73,6 @@ static int AliveCount()
     if (g_inputWnd)   ++n;
     if (g_outputWnd)  ++n;
     if (g_statusWnd)  ++n;
-    if (g_debugWnd)   ++n;
     return n;
 }
 
@@ -143,15 +139,6 @@ static void UpdateCloseButtons()
             UINT flags = g_portSelected ? MF_ENABLED : MF_GRAYED;
             EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | flags);
             DrawMenuBar(g_statusWnd);
-        }
-    }
-
-    if (g_debugWnd) {
-        HMENU menu = GetSystemMenu(g_debugWnd, FALSE);
-        if (menu) {
-            UINT flags = g_portSelected ? MF_ENABLED : MF_GRAYED;
-            EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | flags);
-            DrawMenuBar(g_debugWnd);
         }
     }
 }
@@ -298,8 +285,8 @@ static void SendFrameData(const std::vector<uint8_t>& data)
     bytes.insert(bytes.end(), frame::FLAG, frame::FLAG + frame::FLAG_LEN);
     g_serial.sendBytes(bytes.data(), bytes.size());
 
-    if (g_debugView)
-        AppendFrameView(g_debugView, frame::makeView(f, s), kTxColor);
+    if (g_statusView)
+        AppendFrameView(g_statusView, frame::makeView(f, s), kTxColor);
 }
 
 static void SendLine(const std::wstring& line)
@@ -328,19 +315,16 @@ static void RefreshStatus()
 {
     std::wstring tx = L"Передано байт: " + std::to_wstring(g_serial.transmitted());
     SetWindowTextW(g_statusTx, tx.c_str());
-
-    SetWindowTextW(g_statusErr, g_serial.lastError().c_str());
 }
 
 static void CheckAllWindowsClosed()
 {
-    if (!g_controlWnd && !g_inputWnd && !g_outputWnd && !g_statusWnd && !g_debugWnd)
+    if (!g_controlWnd && !g_inputWnd && !g_outputWnd && !g_statusWnd)
         PostQuitMessage(0);
 }
 
 static void DestroyAllWindows()
 {
-    if (g_debugWnd)   DestroyWindow(g_debugWnd);
     if (g_outputWnd)  DestroyWindow(g_outputWnd);
     if (g_inputWnd)   DestroyWindow(g_inputWnd);
     if (g_statusWnd)  DestroyWindow(g_statusWnd);
@@ -567,9 +551,9 @@ static LRESULT CALLBACK OutputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             for (size_t k = 0; k < text.size(); ++k)
                 AppendOutputChar(text[k]);
 
-            if (g_debugView) {
+            if (g_statusView) {
                 frame::StuffResult s = frame::stuff(frame::serializeBody(frames[i]));
-                AppendFrameView(g_debugView, frame::makeView(frames[i], s), kRxColor);
+                AppendFrameView(g_statusView, frame::makeView(frames[i], s), kRxColor);
             }
         }
         return 0;
@@ -605,7 +589,15 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 {
     switch (msg) {
     case WM_CREATE: {
-        g_statusTx = CreateLabel(hwnd, L"Передано байт: 0", 16, 16, 150, 22);
+        RECT rc = {};
+        GetClientRect(hwnd, &rc);
+
+        g_statusTx = CreateLabel(hwnd, L"Передано байт: 0", 16, 12, 250, 20);
+
+        g_statusHead = CreateFrameView(hwnd, 12, 38, rc.right - 24, 26, false);
+        AppendRichText(g_statusHead, frame::fieldNames(), {}, kTxColor);
+
+        g_statusView = CreateFrameView(hwnd, 12, 70, rc.right - 24, rc.bottom - 82, true);
 
         SetTimer(hwnd, 1, 1000, nullptr);
         RefreshStatus();
@@ -633,46 +625,9 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
     case WM_DESTROY:
         if (hwnd == g_statusWnd) g_statusWnd = nullptr;
-        UpdateCloseButtons();
-        CheckAllWindowsClosed();
-        return 0;
-    }
-
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
-}
-
-static LRESULT CALLBACK DebugWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    switch (msg) {
-    case WM_CREATE: {
-        RECT rc = {};
-        GetClientRect(hwnd, &rc);
-
-        g_debugHead = CreateFrameView(hwnd, 12, 12, rc.right - 24, 26, false);
-        AppendRichText(g_debugHead, frame::fieldNames(), {}, kTxColor);
-
-        g_debugView = CreateFrameView(hwnd, 12, 44, rc.right - 24, rc.bottom - 56, true);
-        return 0;
-    }
-
-    case WM_INITMENUPOPUP:
-        if (lParam == 0) {
-            HMENU menu = GetSystemMenu(hwnd, FALSE);
-            if (menu && !g_portSelected)
-                EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | MF_GRAYED);
-        }
-        break;
-
-    case WM_CLOSE:
-        if (!g_portSelected)
-            return 0;
-        DestroyWindow(hwnd);
-        return 0;
-
-    case WM_DESTROY:
-        if (hwnd == g_debugWnd) g_debugWnd = nullptr;
-        g_debugHead = nullptr;
-        g_debugView = nullptr;
+        g_statusTx = nullptr;
+        g_statusHead = nullptr;
+        g_statusView = nullptr;
         UpdateCloseButtons();
         CheckAllWindowsClosed();
         return 0;
@@ -711,11 +666,6 @@ static bool RegisterClasses(HINSTANCE inst)
     if (!RegisterClassExW(&wc))
         return false;
 
-    wc.lpfnWndProc = DebugWndProc;
-    wc.lpszClassName = kDebugClass;
-    if (!RegisterClassExW(&wc))
-        return false;
-
     return true;
 }
 
@@ -746,24 +696,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         nullptr, nullptr, hInstance, nullptr);
     int screenW = GetSystemMetrics(SM_CXSCREEN);
     int screenH = GetSystemMetrics(SM_CYSCREEN);
-    int debugX = x;
-    int debugY = 790;
-    int debugW = screenW - 80;
-    int debugH = screenH - debugY - 60;
-    if (debugH < 200) {
-        debugY = 610;
-        debugW = 420;
-        debugH = 290;
+    int statusX = x;
+    int statusY = 790;
+    int statusW = screenW - 80;
+    int statusH = screenH - statusY - 60;
+    if (statusH < 200) {
+        statusY = 610;
+        statusW = 420;
+        statusH = 290;
     }
 
     g_statusWnd = CreateWindowExW(0, kStatusClass, L"Состояние",
-        WindowStyle, x, 330, 320, 100,
-        nullptr, nullptr, hInstance, nullptr);
-    g_debugWnd = CreateWindowExW(0, kDebugClass, L"Отладка",
-        WindowStyle, debugX, debugY, debugW, debugH,
+        WindowStyle, statusX, statusY, statusW, statusH,
         nullptr, nullptr, hInstance, nullptr);
 
-    if (!g_controlWnd || !g_inputWnd || !g_outputWnd || !g_statusWnd || !g_debugWnd) {
+    if (!g_controlWnd || !g_inputWnd || !g_outputWnd || !g_statusWnd) {
         MessageBoxW(nullptr, L"Не удалось создать окна.", L"Ошибка", MB_ICONERROR);
         return 1;
     }
@@ -783,8 +730,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     UpdateWindow(g_outputWnd);
     ShowWindow(g_statusWnd, nCmdShow);
     UpdateWindow(g_statusWnd);
-    ShowWindow(g_debugWnd, nCmdShow);
-    UpdateWindow(g_debugWnd);
 
     SetForegroundWindow(g_inputWnd);
 
