@@ -1,73 +1,4 @@
-#include "serial.h"
-
-namespace
-{
-    int utf8Encode(wchar_t ch, char *out)
-    {
-        unsigned int cp = static_cast<unsigned int>(ch);
-        if (cp < 0x80) {
-            out[0] = static_cast<char>(cp);
-            return 1;
-        }
-        if (cp < 0x800) {
-            out[0] = static_cast<char>(0xC0 | (cp >> 6));
-            out[1] = static_cast<char>(0x80 | (cp & 0x3F));
-            return 2;
-        }
-        if (cp < 0x10000) {
-            out[0] = static_cast<char>(0xE0 | (cp >> 12));
-            out[1] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-            out[2] = static_cast<char>(0x80 | (cp & 0x3F));
-            return 3;
-        }
-        out[0] = static_cast<char>(0xF0 | (cp >> 18));
-        out[1] = static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-        out[2] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-        out[3] = static_cast<char>(0x80 | (cp & 0x3F));
-        return 4;
-    }
-
-    class Utf8Decoder
-    {
-    public:
-        bool push(unsigned char b, wchar_t &out)
-        {
-            if (m_len == 0) {
-                if (b < 0x80) {
-                    out = static_cast<wchar_t>(b);
-                    return true;
-                }
-                if ((b & 0xE0) == 0xC0) { m_need = 2; }
-                else if ((b & 0xF0) == 0xE0) { m_need = 3; }
-                else if ((b & 0xF8) == 0xF0) { m_need = 4; }
-                else { out = 0xFFFD; return true; }
-                m_buf[0] = b;
-                m_len = 1;
-                return false;
-            }
-
-            m_buf[m_len++] = b;
-            if (m_len < m_need)
-                return false;
-
-            if (m_need == 2)
-                out = static_cast<wchar_t>(((m_buf[0] & 0x1F) << 6) | (m_buf[1] & 0x3F));
-            else if (m_need == 3)
-                out = static_cast<wchar_t>(((m_buf[0] & 0x0F) << 12) | ((m_buf[1] & 0x3F) << 6) | (m_buf[2] & 0x3F));
-            else
-                out = static_cast<wchar_t>(((m_buf[0] & 0x07) << 18) | ((m_buf[1] & 0x3F) << 12) | ((m_buf[2] & 0x3F) << 6) | (m_buf[3] & 0x3F));
-
-            m_len = 0;
-            m_need = 0;
-            return true;
-        }
-
-    private:
-        unsigned char m_buf[4] = {0, 0, 0, 0};
-        int m_len = 0;
-        int m_need = 0;
-    };
-}
+﻿#include "serial.h"
 
 std::vector<std::wstring> SerialPort::enumeratePorts()
 {
@@ -106,17 +37,18 @@ bool SerialPort::open(const std::wstring &port, DWORD baud)
 
     std::wstring path = L"\\\\.\\" + port;
 
+    // overlapped, С‡С‚РѕР±С‹ Р·Р°РїРёСЃСЊ РЅРµ Р¶РґР°Р»Р°, РїРѕРєР° РІРёСЃРёС‚ ReadFile РІ РїРѕС‚РѕРєРµ РїСЂРёС‘РјР°
     m_h = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
-                      nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                      nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
     if (m_h == INVALID_HANDLE_VALUE) {
-        m_lastError = L"Не удалось открыть " + port + L" (код " + std::to_wstring(GetLastError()) + L")";
+        m_lastError = L"РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РєСЂС‹С‚СЊ " + port + L" (РєРѕРґ " + std::to_wstring(GetLastError()) + L")";
         return false;
     }
 
     DCB dcb = {};
     dcb.DCBlength = sizeof(dcb);
     if (!GetCommState(m_h, &dcb)) {
-        m_lastError = L"Не удалось прочитать параметры порта";
+        m_lastError = L"РќРµ СѓРґР°Р»РѕСЃСЊ РїСЂРѕС‡РёС‚Р°С‚СЊ РїР°СЂР°РјРµС‚СЂС‹ РїРѕСЂС‚Р°";
         close();
         return false;
     }
@@ -129,19 +61,25 @@ bool SerialPort::open(const std::wstring &port, DWORD baud)
     dcb.fOutxDsrFlow = FALSE;
     dcb.fDtrControl = DTR_CONTROL_DISABLE;
     dcb.fRtsControl = RTS_CONTROL_DISABLE;
+    dcb.fBinary = TRUE;
+    dcb.fOutX = FALSE;
+    dcb.fInX = FALSE;
+    dcb.fAbortOnError = FALSE;
 
     if (!SetCommState(m_h, &dcb)) {
-        m_lastError = L"Не удалось установить параметры порта";
+        m_lastError = L"РќРµ СѓРґР°Р»РѕСЃСЊ СѓСЃС‚Р°РЅРѕРІРёС‚СЊ РїР°СЂР°РјРµС‚СЂС‹ РїРѕСЂС‚Р°";
         close();
         return false;
     }
 
     COMMTIMEOUTS to = {};
-    to.ReadIntervalTimeout = 50;
-    to.ReadTotalTimeoutConstant = 100;
-    to.ReadTotalTimeoutMultiplier = 10;
-    to.WriteTotalTimeoutConstant = 50;
-    to.WriteTotalTimeoutMultiplier = 10;
+    // MAXDWORD/MAXDWORD/N: ReadFile РІРѕР·РІСЂР°С‰Р°РµС‚СЃСЏ СЃСЂР°Р·Сѓ, РєР°Рє РїСЂРёС€С‘Р» С…РѕС‚СЏ Р±С‹ РѕРґРёРЅ Р±Р°Р№С‚,
+    // Р° РµСЃР»Рё РЅРёС‡РµРіРѕ РЅРµС‚ - С‡РµСЂРµР· N РјСЃ
+    to.ReadIntervalTimeout = MAXDWORD;
+    to.ReadTotalTimeoutMultiplier = MAXDWORD;
+    to.ReadTotalTimeoutConstant = 5;
+    to.WriteTotalTimeoutConstant = 5;
+    to.WriteTotalTimeoutMultiplier = 0;
     SetCommTimeouts(m_h, &to);
 
     PurgeComm(m_h, PURGE_RXCLEAR | PURGE_TXCLEAR | PURGE_RXABORT | PURGE_TXABORT);
@@ -155,6 +93,8 @@ bool SerialPort::open(const std::wstring &port, DWORD baud)
 void SerialPort::close()
 {
     m_running = false;
+    if (m_h != INVALID_HANDLE_VALUE)
+        CancelIoEx(m_h, nullptr);
     if (m_rx.joinable())
         m_rx.join();
 
@@ -164,40 +104,62 @@ void SerialPort::close()
     }
 }
 
-bool SerialPort::send(wchar_t ch)
+bool SerialPort::sendBytes(const uint8_t *data, size_t n)
 {
     if (m_h == INVALID_HANDLE_VALUE)
         return false;
 
-    char buf[4];
-    int n = utf8Encode(ch, buf);
+    OVERLAPPED ov = {};
+    ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!ov.hEvent)
+        return false;
 
     DWORD written = 0;
-    if (!WriteFile(m_h, buf, n, &written, nullptr) || written != static_cast<DWORD>(n)) {
-        m_lastError = L"Ошибка передачи данных (код " + std::to_wstring(GetLastError()) + L")";
+    BOOL ok = WriteFile(m_h, data, static_cast<DWORD>(n), &written, &ov);
+    if (!ok && GetLastError() == ERROR_IO_PENDING)
+        ok = GetOverlappedResult(m_h, &ov, &written, TRUE);
+    DWORD err = GetLastError();
+    CloseHandle(ov.hEvent);
+
+    if (!ok || written != static_cast<DWORD>(n)) {
+        m_lastError = L"РћС€РёР±РєР° РїРµСЂРµРґР°С‡Рё РґР°РЅРЅС‹С… (РєРѕРґ " + std::to_wstring(err) + L")";
         return false;
     }
 
-    m_tx.fetch_add(n);
+    m_tx.fetch_add(written);
     return true;
 }
 
 void SerialPort::rxLoop()
 {
-    Utf8Decoder decoder;
     unsigned char buffer[256];
 
+    OVERLAPPED ov = {};
+    ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!ov.hEvent)
+        return;
+
     while (m_running.load()) {
-        if (m_h != INVALID_HANDLE_VALUE) {
-            DWORD bytesRead = 0;
-            if (ReadFile(m_h, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0) {
-                for (DWORD i = 0; i < bytesRead; ++i) {
-                    wchar_t ch = 0;
-                    if (decoder.push(buffer[i], ch) && m_cb)
-                        m_cb(ch);
-                }
-            }
+        ResetEvent(ov.hEvent);
+        DWORD bytesRead = 0;
+        BOOL ok = ReadFile(m_h, buffer, sizeof(buffer), &bytesRead, &ov);
+        if (!ok && GetLastError() == ERROR_IO_PENDING)
+            ok = GetOverlappedResult(m_h, &ov, &bytesRead, TRUE);
+
+        if (!ok) {
+            // РѕС‚РјРµРЅР° РёР· close() РёР»Рё РѕС€РёР±РєР° РїРѕСЂС‚Р° - РЅРµ РєСЂСѓС‚РёРјСЃСЏ РІС…РѕР»РѕСЃС‚СѓСЋ
+            if (m_running.load())
+                Sleep(10);
+            continue;
         }
-        Sleep(1);
+
+        for (DWORD i = 0; i < bytesRead; ++i) {
+            if (m_cb)
+                m_cb(buffer[i]);
+        }
     }
+
+    CloseHandle(ov.hEvent);
 }
+
+

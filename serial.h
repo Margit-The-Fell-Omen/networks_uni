@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <string>
 #include <vector>
+#include <cstdint>
 #include <atomic>
 #include <thread>
 #include <functional>
@@ -10,7 +11,7 @@
 class SerialPort
 {
 public:
-    using RxCallback = std::function<void(wchar_t)>;
+    using RxCallback = std::function<void(uint8_t)>;
 
     ~SerialPort() { close(); }
 
@@ -18,7 +19,7 @@ public:
 
     bool open(const std::wstring &port, DWORD baud);
     void close();
-    bool send(wchar_t ch);
+    bool sendBytes(const uint8_t *data, size_t n);
 
     bool isOpen() const { return m_h != INVALID_HANDLE_VALUE; }
     long long transmitted() const { return m_tx.load(); }
