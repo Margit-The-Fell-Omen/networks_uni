@@ -202,68 +202,14 @@ static void DestroyAllWindows()
     if (g_controlWnd) DestroyWindow(g_controlWnd);
 }
 
-// Каретка в окне ввода всегда стоит в конце текста
-static void MoveCaretToEnd(HWND edit)
-{
-    int len = GetWindowTextLengthW(edit);
-    CallWindowProcW(g_oldInputEditProc, edit, EM_SETSEL, len, len);
-}
-
 static LRESULT CALLBACK InputEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    switch (msg) {
-    case WM_KEYDOWN:
-        switch (wParam) {
-        case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN:
-        case VK_HOME: case VK_END: case VK_PRIOR: case VK_NEXT:
-        case VK_DELETE: case VK_INSERT:
-            return 0;
-        }
-        if (GetKeyState(VK_CONTROL) < 0 && wParam == 'A')
-            return 0;
-        break;
-
-    case WM_CHAR: {
+    if (msg == WM_CHAR) {
         wchar_t ch = static_cast<wchar_t>(wParam);
-        // Ctrl+буква (Ctrl+V, Ctrl+A, Ctrl+Backspace и т.п.)
-        if ((ch < 0x20 && ch != L'\r' && ch != L'\b') || ch == 0x7F)
-            return 0;
-        MoveCaretToEnd(hwnd);
         if (ch == L'\r' || ch >= 0x20) {
             if (g_serial.isOpen())
                 g_serial.send(ch);
         }
-        break;
-    }
-
-    // мышь: только даём фокус, каретку не двигаем и не выделяем
-    case WM_LBUTTONDOWN:
-    case WM_LBUTTONDBLCLK:
-    case WM_MBUTTONDOWN:
-    case WM_RBUTTONDOWN:
-        SetFocus(hwnd);
-        MoveCaretToEnd(hwnd);
-        return 0;
-    case WM_LBUTTONUP:
-    case WM_MBUTTONUP:
-    case WM_RBUTTONUP:
-    case WM_MOUSEMOVE:
-    case WM_CONTEXTMENU:
-        return 0;
-
-    // вставка/вырезание/отмена тоже двигают каретку и меняют текст
-    case WM_PASTE:
-    case WM_CUT:
-    case WM_CLEAR:
-    case WM_UNDO:
-    case EM_UNDO:
-        return 0;
-
-    case WM_SETFOCUS: {
-        LRESULT r = CallWindowProcW(g_oldInputEditProc, hwnd, msg, wParam, lParam);
-        MoveCaretToEnd(hwnd);
-        return r;
-    }
     }
     return CallWindowProcW(g_oldInputEditProc, hwnd, msg, wParam, lParam);
 }
