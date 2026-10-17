@@ -14,9 +14,8 @@ namespace frame
     constexpr uint8_t FLAG[FLAG_LEN] = {'4', '5', '0', '5', '0', '1', '-', '1'};
 
     constexpr size_t RESERVED_LEN  = 10;
-    constexpr size_t SERVICE_LEN   = 3;     // адрес назначения + адрес источника + FCS
+    constexpr size_t SERVICE_LEN   = 3;     // адрес назначения + адрес источника + FCS (раньше было 1 байт FCS)
     constexpr size_t MAX_FRAME_LEN = 100;
-
     constexpr size_t MAX_DATA_LEN  = 77;
 
     constexpr size_t MAX_BODY_BITS    = (SERVICE_LEN + MAX_DATA_LEN + RESERVED_LEN) * 8;
@@ -29,7 +28,7 @@ namespace frame
         uint8_t destination = 0;   // пока 0. Будущее: адрес станции-получателя (игнорировать чужие кадры)
         uint8_t source = 0;        // пока 0. Будущее: адрес отправителя (для ответа / подтверждения)
         std::vector<uint8_t> data; // полезная нагрузка — UTF-8 байты сообщения
-        uint8_t fcs = 0;           // пока 0. Будущее: контрольная сумма/CRC-8 для обнаружения сбойных кадров
+        uint8_t fcs[2] = {};       // 2 байта, под контрольную сумму
         uint8_t reserved[RESERVED_LEN] = {};
     };
 

@@ -3,7 +3,54 @@
 //
 #include "frame.h"
 
- using namespace std;
+using namespace std;
+namespace crc {
+    constexpr uint16_t POLYNOMIAL = 0x1021;
+
+    uint16_t calculateFCS(const vector <uint8_t>& data) {
+        uint16_t fcs = 0x0000;
+        for (uint8_t bite : data) {
+            fcs ^= (static_cast<uint16_t>(bite) << 8);
+            for (size_t i = 0; i < 8; i++) {
+                if (fcs & 0x8000) {
+                    fcs = (fcs << 1) ^ POLYNOMIAL;
+                } else {
+                    fcs = (fcs << 1);
+                }
+            }
+        }
+        return fcs;
+    }
+
+    bool CorrectData(frame::Frame& f, uint16_t received_fcs);
+
+    bool IsCorrect(frame::Frame& f) {
+        uint16_t calculated_fcs = calculateFCS(f.data);
+        uint16_t received_fcs = (static_cast<uint16_t>(f.fcs[0]) << 8) | f.fcs[1];
+
+        if (calculated_fcs == received_fcs) {
+            return true;
+        } else {
+            return CorrectData(f, received_fcs);
+        }
+    }
+
+    bool CorrectData(frame::Frame& f, uint16_t received_fcs) {
+        for (size_t byte_idx = 0; byte_idx < f.data.size(); ++byte_idx) {
+            for (int bit_idx = 0; bit_idx < 8; ++bit_idx) {
+
+                f.data[byte_idx] ^= (1 << bit_idx);
+
+                if (calculateFCS(f.data) == received_fcs) {
+                    return true;
+                }
+
+                f.data[byte_idx] ^= (1 << bit_idx);
+            }
+        }
+        return false;
+    }
+}
 
 namespace frame {
     static vector <int> bytesToBits (const uint8_t *data, size_t count) {
@@ -70,7 +117,10 @@ namespace frame {
         bytes.push_back(f.destination);
         bytes.push_back(f.source);
         bytes.insert(bytes.end(), f.data.begin(), f.data.end());
-        bytes.push_back(f.fcs);
+
+        bytes.push_back(f.fcs[0]);
+        bytes.push_back(f.fcs[1]);
+
         for (size_t i = 0; i < RESERVED_LEN; i++) {
             bytes.push_back(f.reserved[i]);
         }
@@ -78,20 +128,24 @@ namespace frame {
     }
 
     bool parseBody(const vector<uint8_t> &body, Frame &f) {
-        if (body.size() < 2 + 1 + 1 + RESERVED_LEN) {
+        // 1(dest) + 1(source) + 2(fcs) + RESERVED_LEN
+        if (body.size() < 1 + 1 + 2 + RESERVED_LEN) {
             return false;
         }
 
-        size_t dataLen = body.size() - 2 - 1 - RESERVED_LEN;
+        size_t dataLen = body.size() - 1 - 1 - 2 - RESERVED_LEN;
         if (dataLen > MAX_DATA_LEN)
             return false;
 
         f.destination = body[0];
         f.source = body[1];
         f.data.assign(body.begin() + 2, body.begin() + dataLen + 2);
-        f.fcs = body[2 + dataLen];
+
+        f.fcs[0] = body[2 + dataLen];
+        f.fcs[1] = body[3 + dataLen];
+
         for (size_t i = 0; i < RESERVED_LEN; i++) {
-            f.reserved[i] = body[3 + dataLen + i];
+            f.reserved[i] = body[4 + dataLen + i];
         }
         return true;
     }
@@ -184,8 +238,8 @@ namespace frame {
             if (start < 0) {
                 if (isFinal)
                     m_buf.clear();
-                else if (m_buf.size() > FLAG_LEN - 1)
-                    m_buf.erase(m_buf.begin(), m_buf.end() - (FLAG_LEN - 1));
+                else if (m_buf.size() > FLAG_LEN)
+                    m_buf.erase(m_buf.begin(), m_buf.end() - FLAG_LEN);
                 return;
             }
             m_buf.erase(m_buf.begin(), m_buf.begin() + start);  // мусор до флага
@@ -213,7 +267,7 @@ namespace frame {
         L"Флаг", L"Адрес назначения", L"Адрес источника", L"Данные", L"FCS"
     };
 
-    constexpr size_t COLUMN_WIDTH[FIELD_COUNT] = { FLAG_LEN * 9 - 1, 16, 15, 17, 8 };
+    constexpr size_t COLUMN_WIDTH[FIELD_COUNT] = { 8, 16, 15, 17, 12 };
 
     static std::wstring valueString(const uint8_t *p, size_t n) {
         std::wstring out;
@@ -256,7 +310,7 @@ namespace frame {
         view.before += L' ';
         appendCentered(view.before, valueString(f.data.data(), f.data.size()), COLUMN_WIDTH[3]);
         view.before += L' ';
-        appendCentered(view.before, valueString(&f.fcs, 1), COLUMN_WIDTH[4]);
+        appendCentered(view.before, valueString(f.fcs, 2), COLUMN_WIDTH[4]);
 
         size_t dataBits = f.data.size() * 8;
         const size_t starts[4] = { 0, 8, 16, 16 + dataBits };
