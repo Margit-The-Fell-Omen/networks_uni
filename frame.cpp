@@ -2,6 +2,8 @@
 // Created by Михаил on 29.09.2026.
 //
 #include "frame.h"
+#include <chrono>
+#include <random>
 
 using namespace std;
 namespace crc {
@@ -20,6 +22,12 @@ namespace crc {
             }
         }
         return fcs;
+    }
+
+    void setFCS(frame::Frame& f) {
+        uint16_t fcs = calculateFCS(f.data);
+        f.fcs[0] = static_cast<uint8_t>(fcs >> 8);
+        f.fcs[1] = static_cast<uint8_t>(fcs & 0xFF);
     }
 
     bool CorrectData(frame::Frame& f, uint16_t received_fcs);
@@ -111,6 +119,25 @@ namespace frame {
         return (window & LAST_63_BITS) == FLAG_START;
     }
 
+    //Эмуляция ошибок
+    ErrorInfo injectError(Frame &f, int percent) {
+        static std::mt19937 rng(
+            static_cast<unsigned>(std::random_device{}()) ^
+            static_cast<unsigned>(std::chrono::steady_clock::now().time_since_epoch().count()));
+
+        ErrorInfo info;
+        if (f.data.empty())
+            return info;
+        if (std::uniform_int_distribution<int>(0, 99)(rng) >= percent)
+            return info;
+
+        info.applied = true;
+        info.byteIndex = std::uniform_int_distribution<size_t>(0, f.data.size() - 1)(rng);
+        info.bitIndex = std::uniform_int_distribution<int>(0, 7)(rng);
+        f.data[info.byteIndex] ^= static_cast<uint8_t>(0x80 >> info.bitIndex);
+        return info;
+    }
+
     //Сборка/разборка кадра
     std::vector<uint8_t> serializeBody(const Frame &f) {
         vector <uint8_t> bytes;
@@ -118,8 +145,9 @@ namespace frame {
         bytes.push_back(f.source);
         bytes.insert(bytes.end(), f.data.begin(), f.data.end());
 
-        bytes.push_back(f.fcs[0]);
-        bytes.push_back(f.fcs[1]);
+        for (size_t i = 0; i < FCS_LEN; i++) {
+            bytes.push_back(f.fcs[i]);
+        }
 
         for (size_t i = 0; i < RESERVED_LEN; i++) {
             bytes.push_back(f.reserved[i]);
@@ -128,12 +156,12 @@ namespace frame {
     }
 
     bool parseBody(const vector<uint8_t> &body, Frame &f) {
-        // 1(dest) + 1(source) + 2(fcs) + RESERVED_LEN
-        if (body.size() < 1 + 1 + 2 + RESERVED_LEN) {
+        // 1(dest) + 1(source) + FCS_LEN + RESERVED_LEN
+        if (body.size() < 1 + 1 + FCS_LEN + RESERVED_LEN) {
             return false;
         }
 
-        size_t dataLen = body.size() - 1 - 1 - 2 - RESERVED_LEN;
+        size_t dataLen = body.size() - 1 - 1 - FCS_LEN - RESERVED_LEN;
         if (dataLen > MAX_DATA_LEN)
             return false;
 
@@ -141,11 +169,12 @@ namespace frame {
         f.source = body[1];
         f.data.assign(body.begin() + 2, body.begin() + dataLen + 2);
 
-        f.fcs[0] = body[2 + dataLen];
-        f.fcs[1] = body[3 + dataLen];
+        for (size_t i = 0; i < FCS_LEN; i++) {
+            f.fcs[i] = body[2 + dataLen + i];
+        }
 
         for (size_t i = 0; i < RESERVED_LEN; i++) {
-            f.reserved[i] = body[4 + dataLen + i];
+            f.reserved[i] = body[2 + FCS_LEN + dataLen + i];
         }
         return true;
     }
@@ -267,7 +296,7 @@ namespace frame {
         L"Флаг", L"Адрес назначения", L"Адрес источника", L"Данные", L"FCS"
     };
 
-    constexpr size_t COLUMN_WIDTH[FIELD_COUNT] = { 8, 16, 15, 17, 12 };
+    constexpr size_t COLUMN_WIDTH[FIELD_COUNT] = { 8, 16, 15, 17, 17 };
 
     static std::wstring valueString(const uint8_t *p, size_t n) {
         std::wstring out;
@@ -299,22 +328,14 @@ namespace frame {
         return out;
     }
 
-    FrameView makeView(const Frame &f, const StuffResult &s) {
-        FrameView view;
-
-        appendCentered(view.before, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
-        view.before += L' ';
-        appendCentered(view.before, valueString(&f.destination, 1), COLUMN_WIDTH[1]);
-        view.before += L' ';
-        appendCentered(view.before, valueString(&f.source, 1), COLUMN_WIDTH[2]);
-        view.before += L' ';
-        appendCentered(view.before, valueString(f.data.data(), f.data.size()), COLUMN_WIDTH[3]);
-        view.before += L' ';
-        appendCentered(view.before, valueString(f.fcs, 2), COLUMN_WIDTH[4]);
-
+    // Строит строку "после стаффинга": значения полей Адрес назначения, Адрес источника, Данные, FCS.
+    // markBit < 0  - подчёркиваются биты, вставленные стаффингом;
+    // markBit >= 0 - подчёркивается бит тела кадра с этим номером (искажённый бит).
+    static void buildStuffedRow(const Frame &f, const StuffResult &s, long markBit,
+                                std::wstring &outText, std::vector<bool> &outMask) {
         size_t dataBits = f.data.size() * 8;
         const size_t starts[4] = { 0, 8, 16, 16 + dataBits };
-        const size_t ends[4] = { 8, 16, 16 + dataBits, 24 + dataBits };
+        const size_t ends[4] = { 8, 16, 16 + dataBits, 16 + dataBits + FCS_LEN * 8 };
 
         std::vector<std::wstring> groups[4];
         std::vector<std::vector<bool> > masks[4];
@@ -345,7 +366,8 @@ namespace frame {
             }
 
             groups[field][group] += s.bits[j] ? L'1' : L'0';
-            masks[field][group].push_back(inserted);
+            bool mark = markBit < 0 ? inserted : (!inserted && (long)orig == markBit);
+            masks[field][group].push_back(mark);
 
             if (!inserted)
                 orig++;
@@ -366,31 +388,58 @@ namespace frame {
             }
         }
 
-        appendCentered(view.after, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
-        view.afterUnderline.assign(view.after.size(), false);
+        outText.clear();
+        appendCentered(outText, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
+        outMask.assign(outText.size(), false);
 
         for (int k = 0; k < 4; k++) {
-            view.after += L' ';
-            view.afterUnderline.push_back(false);
+            outText += L' ';
+            outMask.push_back(false);
 
             size_t width = COLUMN_WIDTH[k + 1];
             size_t left = fields[k].size() < width ? (width - fields[k].size()) / 2 : 0;
 
             for (size_t i = 0; i < left; i++) {
-                view.after += L' ';
-                view.afterUnderline.push_back(false);
+                outText += L' ';
+                outMask.push_back(false);
             }
 
-            view.after += fields[k];
+            outText += fields[k];
             for (size_t b = 0; b < fieldMasks[k].size(); b++)
-                view.afterUnderline.push_back(static_cast<bool>(fieldMasks[k][b]));
+                outMask.push_back(static_cast<bool>(fieldMasks[k][b]));
 
             for (size_t i = left + fields[k].size(); i < width; i++) {
-                view.after += L' ';
-                view.afterUnderline.push_back(false);
+                outText += L' ';
+                outMask.push_back(false);
             }
         }
+    }
 
+    FrameView makeView(const Frame &f, const StuffResult &s) {
+        FrameView view;
+
+        appendCentered(view.before, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
+        view.before += L' ';
+        appendCentered(view.before, valueString(&f.destination, 1), COLUMN_WIDTH[1]);
+        view.before += L' ';
+        appendCentered(view.before, valueString(&f.source, 1), COLUMN_WIDTH[2]);
+        view.before += L' ';
+        appendCentered(view.before, valueString(f.data.data(), f.data.size()), COLUMN_WIDTH[3]);
+        view.before += L' ';
+        appendCentered(view.before, valueString(f.fcs, FCS_LEN), COLUMN_WIDTH[4]);
+
+        buildStuffedRow(f, s, -1, view.after, view.afterUnderline);
+        return view;
+    }
+
+    FrameView makeView(const Frame &f, const StuffResult &s,
+                       const Frame &sent, const StuffResult &sentStuffed, const ErrorInfo &err) {
+        FrameView view = makeView(f, s);
+        view.hasErrorRow = true;
+
+        // номер искажённого бита в теле кадра: адрес назначения (8) + адрес источника (8) + смещение в данных
+        long markBit = err.applied ? (long)(16 + err.byteIndex * 8 + err.bitIndex) : (long)(1L << 30);  // нет ошибки - подчёркивать нечего
+        buildStuffedRow(sent, sentStuffed, markBit, view.afterError, view.errorUnderline);
         return view;
     }
 

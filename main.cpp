@@ -28,6 +28,8 @@ namespace
 
     HWND g_comboPort = nullptr;
     HWND g_comboBaud = nullptr;
+    HWND g_checkErrors = nullptr;
+    bool g_errorsEnabled = true;   // состояние чекбокса «Эмуляция ошибок»
     HWND g_inputEdit = nullptr;
     HWND g_outputEdit = nullptr;
     HWND g_statusTx = nullptr;
@@ -269,6 +271,13 @@ static void AppendFrameView(HWND view, const frame::FrameView& frameView, COLORR
     mask.push_back(false);
     mask.push_back(false);
 
+    if (frameView.hasErrorRow) {
+        text += frameView.afterError + L"\r\n";
+        mask.insert(mask.end(), frameView.errorUnderline.begin(), frameView.errorUnderline.end());
+        mask.push_back(false);
+        mask.push_back(false);
+    }
+
     AppendRichText(view, text, mask, color);
 }
 
@@ -279,14 +288,22 @@ static void SendFrameData(const std::vector<uint8_t>& data)
 
     frame::Frame f;
     f.data = data;
+    crc::setFCS(f);                                   // FCS считается только по полю данных
+    frame::StuffResult clean = frame::stuff(frame::serializeBody(f));   // стаффинг - над кадром с готовым FCS
 
-    frame::StuffResult s = frame::stuff(frame::serializeBody(f));
+    // эмуляция ошибки непосредственно перед передачей
+    frame::Frame sent = f;
+    frame::ErrorInfo err;
+    if (g_errorsEnabled)
+        err = frame::injectError(sent, frame::ERROR_PERCENT);
+
+    frame::StuffResult s = err.applied ? frame::stuff(frame::serializeBody(sent)) : clean;
     std::vector<uint8_t> bytes = s.bytes;
     bytes.insert(bytes.end(), frame::FLAG, frame::FLAG + frame::FLAG_LEN);
     g_serial.sendBytes(bytes.data(), bytes.size());
 
     if (g_statusView)
-        AppendFrameView(g_statusView, frame::makeView(f, s), kTxColor);
+        AppendFrameView(g_statusView, frame::makeView(f, clean, sent, s, err), kTxColor);
 }
 
 static void SendLine(const std::wstring& line)
@@ -419,6 +436,14 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         }
         SendMessageW(g_comboBaud, CB_SETCURSEL, kDefaultBaudIndex, 0);
 
+        wchar_t errText[64];
+        wsprintfW(errText, L"Эмуляция ошибок (вероятность %d %%)", frame::ERROR_PERCENT);
+        g_checkErrors = CreateWindowExW(0, L"BUTTON", errText,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+            16, 158, 320, 22, hwnd, nullptr, nullptr, nullptr);
+        SetFont(g_checkErrors);
+        SendMessageW(g_checkErrors, BM_SETCHECK, BST_CHECKED, 0);
+
         FillPortCombo();
         return 0;
     }
@@ -453,6 +478,11 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             return 0;
         }
 
+        if (ctl == g_checkErrors && code == BN_CLICKED) {
+            g_errorsEnabled = SendMessageW(g_checkErrors, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            return 0;
+        }
+
         if (ctl == g_comboBaud && code == CBN_SELCHANGE) {
             int sel = static_cast<int>(SendMessageW(g_comboBaud, CB_GETCURSEL, 0, 0));
             if (sel != CB_ERR && g_serial.isOpen()) {
@@ -473,7 +503,7 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         return 0;
 
     case WM_DESTROY:
-        if (hwnd == g_controlWnd) g_controlWnd = nullptr;
+        if (hwnd == g_controlWnd) { g_controlWnd = nullptr; g_checkErrors = nullptr; }
         UpdateCloseButtons();
         CheckAllWindowsClosed();
         return 0;
@@ -547,14 +577,17 @@ static LRESULT CALLBACK OutputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         uint8_t byte = static_cast<uint8_t>(wParam);
         std::vector<frame::Frame> frames = g_receiver.feed(&byte, 1);
         for (size_t i = 0; i < frames.size(); ++i) {
-            std::wstring text = FromUtf8(frames[i].data);
-            for (size_t k = 0; k < text.size(); ++k)
-                AppendOutputChar(text[k]);
-
+            // в окне состояния - кадр в том виде, как он пришёл (возможно, с ошибкой)
             if (g_statusView) {
                 frame::StuffResult s = frame::stuff(frame::serializeBody(frames[i]));
                 AppendFrameView(g_statusView, frame::makeView(frames[i], s), kRxColor);
             }
+
+            // проверка FCS и исправление одиночной ошибки; в окно вывода - исправленные данные
+            crc::IsCorrect(frames[i]);
+            std::wstring text = FromUtf8(frames[i].data);
+            for (size_t k = 0; k < text.size(); ++k)
+                AppendOutputChar(text[k]);
         }
         return 0;
     }
@@ -686,7 +719,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     int x = 40;
     const DWORD WindowStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     g_controlWnd = CreateWindowExW(0, kControlClass, L"Управление",
-        WindowStyle, x, 60, 370, 220,
+        WindowStyle, x, 60, 370, 260,
         nullptr, nullptr, hInstance, nullptr);
     g_inputWnd = CreateWindowExW(0, kInputClass, L"Ввод сообщений",
         WindowStyle, x + 420, 60, 500, 330,
