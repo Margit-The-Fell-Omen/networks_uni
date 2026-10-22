@@ -293,10 +293,11 @@ namespace frame {
     static const size_t FIELD_COUNT = 5;
 
     static const wchar_t *FIELD_NAMES[FIELD_COUNT] = {
-        L"Флаг", L"Адрес назначения", L"Адрес источника", L"Данные", L"FCS"
+        L"Флаг", L"Адрес назначения", L"Адрес источника", L"FCS", L"Данные"
     };
 
-    constexpr size_t COLUMN_WIDTH[FIELD_COUNT] = { 8, 16, 15, 17, 17 };
+    // Обновленные ширины колонок под новый порядок
+    constexpr size_t COLUMN_WIDTH[FIELD_COUNT] = { 72, 16, 16, 20, 120 };
 
     static std::wstring valueString(const uint8_t *p, size_t n) {
         std::wstring out;
@@ -328,13 +329,11 @@ namespace frame {
         return out;
     }
 
-    // Строит строку "после стаффинга": значения полей Адрес назначения, Адрес источника, Данные, FCS.
-    // markBit < 0  - подчёркиваются биты, вставленные стаффингом;
-    // markBit >= 0 - подчёркивается бит тела кадра с этим номером (искажённый бит).
+    // Строит строку "после стаффинга". Порядок вывода изменен на: Dest, Src, FCS, Data.
     static void buildStuffedRow(const Frame &f, const StuffResult &s, long markBit,
                                 std::wstring &outText, std::vector<bool> &outMask) {
         size_t dataBits = f.data.size() * 8;
-        const size_t starts[4] = { 0, 8, 16, 16 + dataBits };
+        const size_t starts[4] = { 0, 8, 16, 16 + dataBits }; // 0:Dest, 1:Src, 2:Data, 3:FCS
         const size_t ends[4] = { 8, 16, 16 + dataBits, 16 + dataBits + FCS_LEN * 8 };
 
         std::vector<std::wstring> groups[4];
@@ -392,14 +391,19 @@ namespace frame {
         appendCentered(outText, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
         outMask.assign(outText.size(), false);
 
-        for (int k = 0; k < 4; k++) {
+        // Порядок вывода: 0(Адрес назн), 1(Адрес ист), 3(FCS), 2(Данные)
+        int outOrder[4] = { 0, 1, 3, 2 };
+
+        for (int i = 0; i < 4; i++) {
+            int k = outOrder[i]; // Индекс поля в массиве fields
+
             outText += L' ';
             outMask.push_back(false);
 
-            size_t width = COLUMN_WIDTH[k + 1];
+            size_t width = COLUMN_WIDTH[i + 1];
             size_t left = fields[k].size() < width ? (width - fields[k].size()) / 2 : 0;
 
-            for (size_t i = 0; i < left; i++) {
+            for (size_t j = 0; j < left; j++) {
                 outText += L' ';
                 outMask.push_back(false);
             }
@@ -408,7 +412,7 @@ namespace frame {
             for (size_t b = 0; b < fieldMasks[k].size(); b++)
                 outMask.push_back(static_cast<bool>(fieldMasks[k][b]));
 
-            for (size_t i = left + fields[k].size(); i < width; i++) {
+            for (size_t j = left + fields[k].size(); j < width; j++) {
                 outText += L' ';
                 outMask.push_back(false);
             }
@@ -424,9 +428,11 @@ namespace frame {
         view.before += L' ';
         appendCentered(view.before, valueString(&f.source, 1), COLUMN_WIDTH[2]);
         view.before += L' ';
-        appendCentered(view.before, valueString(f.data.data(), f.data.size()), COLUMN_WIDTH[3]);
+
+        appendCentered(view.before, valueString(f.fcs, FCS_LEN), COLUMN_WIDTH[3]);
         view.before += L' ';
-        appendCentered(view.before, valueString(f.fcs, FCS_LEN), COLUMN_WIDTH[4]);
+
+        appendCentered(view.before, valueString(f.data.data(), f.data.size()), COLUMN_WIDTH[4]);
 
         buildStuffedRow(f, s, -1, view.after, view.afterUnderline);
         return view;
@@ -437,10 +443,8 @@ namespace frame {
         FrameView view = makeView(f, s);
         view.hasErrorRow = true;
 
-        // номер искажённого бита в теле кадра: адрес назначения (8) + адрес источника (8) + смещение в данных
-        long markBit = err.applied ? (long)(16 + err.byteIndex * 8 + err.bitIndex) : (long)(1L << 30);  // нет ошибки - подчёркивать нечего
+        long markBit = err.applied ? (long)(16 + err.byteIndex * 8 + err.bitIndex) : (long)(1L << 30);
         buildStuffedRow(sent, sentStuffed, markBit, view.afterError, view.errorUnderline);
         return view;
     }
-
 }
