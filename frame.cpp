@@ -104,11 +104,8 @@ namespace frame {
     }
 
     static const uint64_t FLAG64 = makeFlag64();
-
     static const uint64_t FLAG_START = FLAG64 >> 1;
-
     static const uint64_t LAST_63_BITS = (uint64_t(1) << 63) - 1;
-
     static const int STUFF_BIT = (FLAG64 & 1) ? 0 : 1;
 
     static void pushToWindow(uint64_t &window, int bit) {
@@ -156,7 +153,6 @@ namespace frame {
     }
 
     bool parseBody(const vector<uint8_t> &body, Frame &f) {
-        // 1(dest) + 1(source) + FCS_LEN + RESERVED_LEN
         if (body.size() < 1 + 1 + FCS_LEN + RESERVED_LEN) {
             return false;
         }
@@ -296,7 +292,6 @@ namespace frame {
         L"Флаг", L"Адрес назначения", L"Адрес источника", L"FCS", L"Данные"
     };
 
-    // Обновленные ширины колонок под новый порядок
     constexpr size_t COLUMN_WIDTH[FIELD_COUNT] = { 72, 16, 16, 20, 120 };
 
     static std::wstring valueString(const uint8_t *p, size_t n) {
@@ -329,11 +324,10 @@ namespace frame {
         return out;
     }
 
-    // Строит строку "после стаффинга". Порядок вывода изменен на: Dest, Src, FCS, Data.
     static void buildStuffedRow(const Frame &f, const StuffResult &s, long markBit,
                                 std::wstring &outText, std::vector<bool> &outMask) {
         size_t dataBits = f.data.size() * 8;
-        const size_t starts[4] = { 0, 8, 16, 16 + dataBits }; // 0:Dest, 1:Src, 2:Data, 3:FCS
+        const size_t starts[4] = { 0, 8, 16, 16 + dataBits };
         const size_t ends[4] = { 8, 16, 16 + dataBits, 16 + dataBits + FCS_LEN * 8 };
 
         std::vector<std::wstring> groups[4];
@@ -391,11 +385,10 @@ namespace frame {
         appendCentered(outText, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
         outMask.assign(outText.size(), false);
 
-        // Порядок вывода: 0(Адрес назн), 1(Адрес ист), 3(FCS), 2(Данные)
         int outOrder[4] = { 0, 1, 3, 2 };
 
         for (int i = 0; i < 4; i++) {
-            int k = outOrder[i]; // Индекс поля в массиве fields
+            int k = outOrder[i];
 
             outText += L' ';
             outMask.push_back(false);
@@ -441,7 +434,8 @@ namespace frame {
     FrameView makeView(const Frame &f, const StuffResult &s,
                        const Frame &sent, const StuffResult &sentStuffed, const ErrorInfo &err) {
         FrameView view = makeView(f, s);
-        view.hasErrorRow = true;
+
+        view.hasErrorRow = err.applied;
 
         long markBit = err.applied ? (long)(16 + err.byteIndex * 8 + err.bitIndex) : (long)(1L << 30);
         buildStuffedRow(sent, sentStuffed, markBit, view.afterError, view.errorUnderline);

@@ -573,24 +573,27 @@ static LRESULT CALLBACK OutputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         return 0;
     }
 
-    case WM_APP_RX: {
-        uint8_t byte = static_cast<uint8_t>(wParam);
-        std::vector<frame::Frame> frames = g_receiver.feed(&byte, 1);
-        for (size_t i = 0; i < frames.size(); ++i) {
-            // в окне состояния - кадр в том виде, как он пришёл (возможно, с ошибкой)
-            if (g_statusView) {
-                frame::StuffResult s = frame::stuff(frame::serializeBody(frames[i]));
-                AppendFrameView(g_statusView, frame::makeView(frames[i], s), kRxColor);
-            }
+        case WM_APP_RX: {
+            uint8_t byte = static_cast<uint8_t>(wParam);
+            std::vector<frame::Frame> frames = g_receiver.feed(&byte, 1);
+            for (size_t i = 0; i < frames.size(); ++i) {
 
-            // проверка FCS и исправление одиночной ошибки; в окно вывода - исправленные данные
-            crc::IsCorrect(frames[i]);
-            std::wstring text = FromUtf8(frames[i].data);
-            for (size_t k = 0; k < text.size(); ++k)
-                AppendOutputChar(text[k]);
+                // 1. СНАЧАЛА исправляем ошибку (если она есть)
+                crc::IsCorrect(frames[i]);
+
+                // 2. ПОТОМ рисуем кадр (теперь там будет исправленный 00001101)
+                if (g_statusView) {
+                    frame::StuffResult s = frame::stuff(frame::serializeBody(frames[i]));
+                    AppendFrameView(g_statusView, frame::makeView(frames[i], s), kRxColor);
+                }
+
+                // 3. Выводим текст в чат
+                std::wstring text = FromUtf8(frames[i].data);
+                for (size_t k = 0; k < text.size(); ++k)
+                    AppendOutputChar(text[k]);
+            }
+            return 0;
         }
-        return 0;
-    }
 
     case WM_INITMENUPOPUP:
         if (lParam == 0) {
