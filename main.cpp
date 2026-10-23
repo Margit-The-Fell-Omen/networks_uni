@@ -261,22 +261,52 @@ static std::wstring FromUtf8(const std::vector<uint8_t>& data)
     return text;
 }
 
-static void AppendFrameView(HWND view, const frame::FrameView& frameView, COLORREF color)
+static void AppendTxFrameView(HWND view, const frame::FrameView& fv, COLORREF color)
 {
-    std::wstring text = frameView.before + L"\r\n" + frameView.after + L"\r\n";
-    std::vector<bool> mask(frameView.before.size(), false);
-    mask.push_back(false);
-    mask.push_back(false);
-    mask.insert(mask.end(), frameView.afterUnderline.begin(), frameView.afterUnderline.end());
+    std::wstring text;
+    std::vector<bool> mask;
+
+    text += fv.before + L"\r\n";
+    mask.insert(mask.end(), fv.before.size(), false);
     mask.push_back(false);
     mask.push_back(false);
 
-    if (frameView.hasErrorRow) {
-        text += frameView.afterError + L"\r\n";
-        mask.insert(mask.end(), frameView.errorUnderline.begin(), frameView.errorUnderline.end());
+    text += fv.after + L"\r\n";
+    mask.insert(mask.end(), fv.afterUnderline.begin(), fv.afterUnderline.end());
+    mask.push_back(false);
+    mask.push_back(false);
+
+    if (fv.hasErrorRow) {
+        text += fv.afterError + L"\r\n";
+        mask.insert(mask.end(), fv.errorUnderline.begin(), fv.errorUnderline.end());
         mask.push_back(false);
         mask.push_back(false);
     }
+
+    AppendRichText(view, text, mask, color);
+}
+
+static void AppendRxFrameView(HWND view, const frame::FrameView& fv, COLORREF color)
+{
+    std::wstring text;
+    std::vector<bool> mask;
+
+    if (fv.hasErrorRow) {
+        text += fv.afterError + L"\r\n";
+        mask.insert(mask.end(), fv.errorUnderline.begin(), fv.errorUnderline.end());
+        mask.push_back(false);
+        mask.push_back(false);
+    }
+
+    text += fv.before + L"\r\n";
+    mask.insert(mask.end(), fv.before.size(), false);
+    mask.push_back(false);
+    mask.push_back(false);
+
+    text += fv.after + L"\r\n";
+    mask.insert(mask.end(), fv.afterUnderline.begin(), fv.afterUnderline.end());
+    mask.push_back(false);
+    mask.push_back(false);
 
     AppendRichText(view, text, mask, color);
 }
@@ -303,7 +333,7 @@ static void SendFrameData(const std::vector<uint8_t>& data)
     g_serial.sendBytes(bytes.data(), bytes.size());
 
     if (g_statusView)
-        AppendFrameView(g_statusView, frame::makeView(f, clean, sent, s, err), kTxColor);
+        AppendTxFrameView(g_statusView, frame::makeView(f, clean, sent, s, err), kTxColor);
 }
 
 static void SendLine(const std::wstring& line)
@@ -573,27 +603,41 @@ static LRESULT CALLBACK OutputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         return 0;
     }
 
-        case WM_APP_RX: {
-            uint8_t byte = static_cast<uint8_t>(wParam);
-            std::vector<frame::Frame> frames = g_receiver.feed(&byte, 1);
-            for (size_t i = 0; i < frames.size(); ++i) {
+    case WM_APP_RX: {
+        uint8_t byte = static_cast<uint8_t>(wParam);
+        std::vector<frame::Frame> frames = g_receiver.feed(&byte, 1);
 
-                // 1. СНАЧАЛА исправляем ошибку (если она есть)
-                crc::IsCorrect(frames[i]);
+        for (size_t i = 0; i < frames.size(); ++i) {
 
-                // 2. ПОТОМ рисуем кадр (теперь там будет исправленный 00001101)
-                if (g_statusView) {
-                    frame::StuffResult s = frame::stuff(frame::serializeBody(frames[i]));
-                    AppendFrameView(g_statusView, frame::makeView(frames[i], s), kRxColor);
+            frame::Frame raw = frames[i];
+            crc::IsCorrect(frames[i]);
+
+            frame::ErrorInfo err;
+            for (size_t b = 0; b < raw.data.size(); ++b) {
+                if (raw.data[b] != frames[i].data[b]) {
+                    uint8_t diff = raw.data[b] ^ frames[i].data[b];
+                    int bit = 7;
+                   while (bit >= 0 && !((diff >> bit) & 1)) --bit;
+                    err.applied = true;
+                    err.byteIndex = b;
+                    err.bitIndex = 7 - bit;
+                    break;
                 }
-
-                // 3. Выводим текст в чат
-                std::wstring text = FromUtf8(frames[i].data);
-                for (size_t k = 0; k < text.size(); ++k)
-                    AppendOutputChar(text[k]);
             }
-            return 0;
+
+            if (g_statusView) {
+                frame::StuffResult fixS = frame::stuff(frame::serializeBody(frames[i]));
+                frame::StuffResult rawS = frame::stuff(frame::serializeBody(raw));
+                AppendRxFrameView(g_statusView,
+                    frame::makeView(frames[i], fixS, raw, rawS, err), kRxColor);
+            }
+
+            std::wstring text = FromUtf8(frames[i].data);
+            for (size_t k = 0; k < text.size(); ++k)
+                AppendOutputChar(text[k]);
         }
+        return 0;
+    }
 
     case WM_INITMENUPOPUP:
         if (lParam == 0) {
