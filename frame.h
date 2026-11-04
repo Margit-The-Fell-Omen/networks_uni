@@ -95,10 +95,9 @@ namespace frame
     public:
         // Возвращает принятые кадры
         std::vector<Frame> feed(const uint8_t *p, size_t n);
-        std::vector<Frame> flush();   //конец последнего кадра
     private:
         std::vector<uint8_t> m_buf;
-        void process(std::vector<Frame> &out, bool isFinal);
+        void process(std::vector<Frame> &out);
     };
 }
 
