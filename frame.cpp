@@ -138,8 +138,8 @@ namespace frame {
     //Сборка/разборка кадра
     std::vector<uint8_t> serializeBody(const Frame &f) {
         vector <uint8_t> bytes;
-        bytes.push_back(f.destination);
-        bytes.push_back(f.source);
+        bytes.push_back(f.frameType);
+        bytes.push_back(f.sequenceNumber);
         bytes.insert(bytes.end(), f.data.begin(), f.data.end());
 
         for (size_t i = 0; i < FCS_LEN; i++) {
@@ -161,8 +161,8 @@ namespace frame {
         if (dataLen > MAX_DATA_LEN)
             return false;
 
-        f.destination = body[0];
-        f.source = body[1];
+        f.frameType = body[0];
+        f.sequenceNumber = body[1];
         f.data.assign(body.begin() + 2, body.begin() + dataLen + 2);
 
         for (size_t i = 0; i < FCS_LEN; i++) {
@@ -417,9 +417,9 @@ namespace frame {
 
         appendCentered(view.before, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
         view.before += L' ';
-        appendCentered(view.before, valueString(&f.destination, 1), COLUMN_WIDTH[1]);
+        appendCentered(view.before, valueString(&f.frameType, 1), COLUMN_WIDTH[1]);
         view.before += L' ';
-        appendCentered(view.before, valueString(&f.source, 1), COLUMN_WIDTH[2]);
+        appendCentered(view.before, valueString(&f.sequenceNumber, 1), COLUMN_WIDTH[2]);
         view.before += L' ';
 
         appendCentered(view.before, valueString(f.fcs, FCS_LEN), COLUMN_WIDTH[3]);

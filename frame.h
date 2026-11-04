@@ -38,8 +38,8 @@ namespace frame
     // | Флаг (8) | Адрес назначения (1) | Адрес источника (1) | Данные (1..77) | FCS (2) | Резерв (9) |
     struct Frame
     {
-        uint8_t destination = 0;   // пока 0. Будущее: адрес станции-получателя (игнорировать чужие кадры)
-        uint8_t source = 0;        // пока 0. Будущее: адрес отправителя (для ответа / подтверждения)
+        uint8_t frameType = 0;
+        uint8_t sequenceNumber = 0;
         std::vector<uint8_t> data; // полезная нагрузка — UTF-8 байты сообщения
         uint8_t fcs[FCS_LEN] = {}; // циклический код только от поля данных
         uint8_t reserved[RESERVED_LEN] = {};
