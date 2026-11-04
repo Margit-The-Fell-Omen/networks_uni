@@ -51,7 +51,7 @@ namespace frame {
     static const size_t FIELD_COUNT = 5;
 
     static const wchar_t *FIELD_NAMES[FIELD_COUNT] = {
-        L"Флаг", L"Тип кадра", L"Порядковый номер", L"Данные", L"FCS"
+        L"Флаг", L"Начало сообщения", L"Осталось кадров", L"Данные", L"FCS"
     };
 
     constexpr size_t COLUMN_WIDTH[FIELD_COUNT] = { FLAG_LEN * 9 - 1, 16, 15, 17, 8 };
@@ -75,8 +75,8 @@ namespace frame {
     //Сборка/разборка кадра
     std::vector<uint8_t> serializeBody(const Frame &f) {
         vector <uint8_t> bytes;
-        bytes.push_back(f.destination);
-        bytes.push_back(f.source);
+        bytes.push_back(f.messageStart);
+        bytes.push_back(f.framesLeft);
         bytes.insert(bytes.end(), f.data.begin(), f.data.end());
         bytes.push_back(f.fcs);
         for (size_t i = 0; i < RESERVED_LEN; i++) {
@@ -94,8 +94,8 @@ namespace frame {
         if (dataLen > MAX_DATA_LEN)
             return false;
 
-        f.destination = body[0];
-        f.source = body[1];
+        f.messageStart = body[0];
+        f.framesLeft = body[1];
         f.data.assign(body.begin() + 2, body.begin() + dataLen + 2);
         f.fcs = body[2 + dataLen];
         for (size_t i = 0; i < RESERVED_LEN; i++) {
@@ -242,9 +242,9 @@ namespace frame {
 
         appendCentered(view.before, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
         view.before += L' ';
-        appendCentered(view.before, valueString(&f.destination, 1), COLUMN_WIDTH[1]);
+        appendCentered(view.before, valueString(&f.messageStart, 1), COLUMN_WIDTH[1]);
         view.before += L' ';
-        appendCentered(view.before, valueString(&f.source, 1), COLUMN_WIDTH[2]);
+        appendCentered(view.before, valueString(&f.framesLeft, 1), COLUMN_WIDTH[2]);
         view.before += L' ';
         appendCentered(view.before, valueString(f.data.data(), f.data.size()), COLUMN_WIDTH[3]);
         view.before += L' ';

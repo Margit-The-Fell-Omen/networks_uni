@@ -14,7 +14,7 @@ namespace frame
     constexpr uint8_t FLAG[FLAG_LEN] = {'4', '5', '0', '5', '0', '1', '-', '1'};
 
     constexpr size_t RESERVED_LEN  = 10;
-    constexpr size_t SERVICE_LEN   = 3;     // адрес назначения + адрес источника + FCS
+    constexpr size_t SERVICE_LEN   = 3;     // флаг начала сообщения + счётчик оставшихся кадров + FCS
     constexpr size_t MAX_FRAME_LEN = 100;
 
     constexpr size_t MAX_DATA_LEN  = 77;
@@ -23,11 +23,11 @@ namespace frame
     constexpr size_t MAX_STUFFED_BITS = MAX_BODY_BITS + MAX_BODY_BITS / 63;
     constexpr size_t MAX_STUFFED_LEN  = FLAG_LEN + (MAX_STUFFED_BITS + 7) / 8;
 
-    // | Флаг (8) | Адрес назначения (1) | Адрес источника (1) | Данные (1..77) | FCS (1) | Резерв (10) |
+    // | Флаг (8) | Флаг начала (1) | Осталось кадров (1) | Данные (1..77) | FCS (1) | Резерв (10) |
     struct Frame
     {
-        uint8_t destination = 0;   // пока 0. Будущее: адрес станции-получателя (игнорировать чужие кадры)
-        uint8_t source = 0;        // пока 0. Будущее: адрес отправителя (для ответа / подтверждения)
+        uint8_t messageStart = 0;  // пока 0; в будущем 1 — первый кадр сообщения
+        uint8_t framesLeft = 0;    // пока 0; в будущем — сколько кадров осталось (N..1)
         std::vector<uint8_t> data; // полезная нагрузка — UTF-8 байты сообщения
         uint8_t fcs = 0;           // пока 0. Будущее: контрольная сумма/CRC-8 для обнаружения сбойных кадров
         uint8_t reserved[RESERVED_LEN] = {};
