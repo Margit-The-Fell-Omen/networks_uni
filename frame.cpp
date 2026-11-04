@@ -138,8 +138,8 @@ namespace frame {
     //Сборка/разборка кадра
     std::vector<uint8_t> serializeBody(const Frame &f) {
         vector <uint8_t> bytes;
-        bytes.push_back(f.destination);
-        bytes.push_back(f.source);
+        bytes.push_back(f.messageStart);
+        bytes.push_back(f.framesLeft);
         bytes.insert(bytes.end(), f.data.begin(), f.data.end());
 
         for (size_t i = 0; i < FCS_LEN; i++) {
@@ -161,8 +161,8 @@ namespace frame {
         if (dataLen > MAX_DATA_LEN)
             return false;
 
-        f.destination = body[0];
-        f.source = body[1];
+        f.messageStart = body[0];
+        f.framesLeft = body[1];
         f.data.assign(body.begin() + 2, body.begin() + dataLen + 2);
 
         for (size_t i = 0; i < FCS_LEN; i++) {
@@ -277,9 +277,17 @@ namespace frame {
 
             vector<uint8_t> body = destuff(m_buf.data() + FLAG_LEN, end - FLAG_LEN);
             Frame f;
-            if (parseBody(body, f))
-                out.push_back(f);                    // сбойный кадр просто пропускаем
+            if (parseBody(body, f)) {
+                // Кадр, разрушенный коллизией, не проходит FCS.
+                // Проверяем копию: исходный кадр нужен интерфейсу,
+                // чтобы показать и исправленную одиночную ошибку.
+                Frame check = f;
+                if (crc::IsCorrect(check))
+                    out.push_back(f);
+            }
 
+            // Оставляем найденный флаг в буфере: он может быть началом
+            // следующего кадра, а не только закрывающим флагом текущего.
             m_buf.erase(m_buf.begin(), m_buf.begin() + end);
             if (m_buf.empty())
                 return;
@@ -289,7 +297,7 @@ namespace frame {
     static const size_t FIELD_COUNT = 5;
 
     static const wchar_t *FIELD_NAMES[FIELD_COUNT] = {
-        L"Флаг", L"Адрес назначения", L"Адрес источника", L"FCS", L"Данные"
+        L"Флаг", L"Начало сообщения", L"Осталось кадров", L"FCS", L"Данные"
     };
 
     constexpr size_t COLUMN_WIDTH[FIELD_COUNT] = { 72, 16, 16, 20, 120 };
@@ -417,9 +425,9 @@ namespace frame {
 
         appendCentered(view.before, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
         view.before += L' ';
-        appendCentered(view.before, valueString(&f.destination, 1), COLUMN_WIDTH[1]);
+        appendCentered(view.before, valueString(&f.messageStart, 1), COLUMN_WIDTH[1]);
         view.before += L' ';
-        appendCentered(view.before, valueString(&f.source, 1), COLUMN_WIDTH[2]);
+        appendCentered(view.before, valueString(&f.framesLeft, 1), COLUMN_WIDTH[2]);
         view.before += L' ';
 
         appendCentered(view.before, valueString(f.fcs, FCS_LEN), COLUMN_WIDTH[3]);

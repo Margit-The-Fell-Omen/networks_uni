@@ -11,11 +11,16 @@ add_executable(serial_chat WIN32
         serial.h
         frame.cpp
         frame.h
+        channel.cpp
+        channel.h
         resources.rc
 )
 
 if(MSVC)
     target_compile_options(serial_chat PRIVATE /utf-8)
+    # resources.rc уже содержит app.manifest; иначе линковщик
+    # встраивает второй манифест с тем же идентификатором.
+    target_link_options(serial_chat PRIVATE /MANIFEST:NO)
 else()
     target_compile_options(serial_chat PRIVATE -O2 -s)
 endif()

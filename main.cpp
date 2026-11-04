@@ -1,10 +1,14 @@
+#define NOMINMAX
 #include <windows.h>
 #include <richedit.h>
+#include <algorithm>
+#include <deque>
 #include <string>
 #include <vector>
 
 #include "serial.h"
 #include "frame.h"
+#include "channel.h"
 
 namespace
 {
@@ -18,8 +22,20 @@ namespace
     const int kDefaultBaudIndex = 3;
 
     const UINT WM_APP_RX = WM_APP + 1;
+    const UINT_PTR kEngineTimer = 1;
+    const UINT kEngineIntervalMs = 10;
 
     SerialPort g_serial;
+    channel::Session g_session;
+
+    struct TxJob
+    {
+        std::vector<uint8_t> bytes;
+        frame::FrameView view;
+        channel::Config config;
+    };
+
+    std::deque<TxJob> g_txQueue;
 
     HWND g_controlWnd = nullptr;
     HWND g_inputWnd = nullptr;
@@ -29,16 +45,23 @@ namespace
     HWND g_comboPort = nullptr;
     HWND g_comboBaud = nullptr;
     HWND g_checkErrors = nullptr;
-    bool g_errorsEnabled = true;   // состояние чекбокса «Эмуляция ошибок»
+    HWND g_checkMultiAccess = nullptr;
+    bool g_errorsEnabled = true;        // состояние чекбокса «Эмуляция ошибок»
+    bool g_multiAccessEnabled = true;   // состояние чекбокса «Эмуляция множественного доступа»
     HWND g_inputEdit = nullptr;
     HWND g_outputEdit = nullptr;
     HWND g_statusTx = nullptr;
+    HWND g_statusState = nullptr;
+    HWND g_statusStarsTitle = nullptr;
+    HWND g_statusStars = nullptr;
+    HWND g_statusCounters = nullptr;
     HWND g_statusHead = nullptr;
     HWND g_statusView = nullptr;
 
     std::vector<std::wstring> g_ports;
     std::wstring g_currentPort;
     std::wstring g_pendingText;
+    DWORD g_currentBaud = 9600;
 
     frame::Receiver g_receiver;
 
@@ -47,11 +70,23 @@ namespace
 
     WNDPROC g_oldInputEditProc = nullptr;
     HFONT g_font = nullptr;
+    HFONT g_boldFont = nullptr;
     bool g_lastWasCR = false;
     bool g_portSelected = false;
 
     bool g_inputLocked = false;
     bool g_outputLocked = false;
+
+    // Состояние, которое читает окно «Состояние».
+    std::wstring g_stars;
+    std::wstring g_lastEvent;
+    int g_attempts = 0;
+    int g_collisions = 0;
+    int g_busyWaits = 0;
+    channel::State g_lastState = channel::State::Idle;
+    std::deque<frame::FrameView> g_pendingViews;
+    COLORREF g_stateColor = RGB(0, 0, 0);
+    COLORREF g_starsColor = RGB(128, 128, 128);
 }
 
 static void SetFont(HWND hwnd)
@@ -66,6 +101,144 @@ static HWND CreateLabel(HWND parent, const wchar_t* text, int x, int y, int w, i
         x, y, w, h, parent, nullptr, nullptr, nullptr);
     SetFont(ctl);
     return ctl;
+}
+
+static HWND CreateLabelRight(HWND parent, const wchar_t* text, int x, int y, int w, int h)
+{
+    HWND ctl = CreateWindowExW(0, L"STATIC", text,
+        WS_CHILD | WS_VISIBLE | SS_RIGHT,
+        x, y, w, h, parent, nullptr, nullptr, nullptr);
+    SetFont(ctl);
+    return ctl;
+}
+
+static HWND CreateStatusText(HWND parent, const wchar_t* text, int x, int y, int w, int h)
+{
+    HWND ctl = CreateWindowExW(0, L"EDIT", text,
+        WS_CHILD | WS_VISIBLE | ES_READONLY | ES_LEFT,
+        x, y, w, h, parent, nullptr, nullptr, nullptr);
+    SetFont(ctl);
+    return ctl;
+}
+
+static void SetLabel(HWND hwnd, const std::wstring& text)
+{
+    if (!hwnd)
+        return;
+
+    const int len = GetWindowTextLengthW(hwnd);
+    std::wstring current(static_cast<size_t>(len) + 1, L'\0');
+    GetWindowTextW(hwnd, current.data(), len + 1);
+    current.resize(static_cast<size_t>(len));
+
+    if (current != text)
+        SetWindowTextW(hwnd, text.c_str());
+}
+
+static std::wstring StateText(channel::State state)
+{
+    switch (state)
+    {
+    case channel::State::Idle:         return L"ожидание";
+    case channel::State::Done:         return L"свободен (кадр передан)";
+    case channel::State::Error:        return L"ошибка";
+    default:                           return channel::stateName(state);
+    }
+}
+
+static COLORREF StateColor(channel::State state)
+{
+    switch (state)
+    {
+    case channel::State::Busy:         return RGB(180, 100, 0);
+    case channel::State::Transmitting: return RGB(0, 90, 170);
+    case channel::State::Collision:
+    case channel::State::Jam:
+    case channel::State::Error:        return RGB(200, 0, 0);
+    case channel::State::Backoff:      return RGB(150, 0, 150);
+    case channel::State::Done:         return RGB(0, 128, 0);
+    default:                           return RGB(0, 0, 0);
+    }
+}
+
+static void OnChannelState(channel::State state)
+{
+    g_lastState = state;
+
+    switch (state)
+    {
+    case channel::State::Listening:
+        g_lastEvent = L"Прослушивание канала";
+        break;
+    case channel::State::Busy:
+        ++g_busyWaits;
+        g_lastEvent = L"Канал занят, ожидание";
+        break;
+    case channel::State::Transmitting:
+        ++g_attempts;
+        g_lastEvent = L"Передача кадра";
+        break;
+    case channel::State::Collision:
+    case channel::State::Jam:
+    case channel::State::Backoff:
+        break;
+    case channel::State::Done:
+        g_lastEvent = L"Кадр передан";
+        break;
+    case channel::State::Error:
+        g_lastEvent = L"Кадр не передан";
+        break;
+    case channel::State::Cancelled:
+        g_lastEvent = L"Передача отменена";
+        break;
+    default:
+        break;
+    }
+}
+
+static void OnChannelCollision(int byteIndex, int attempt)
+{
+    ++g_collisions;
+    if (!g_stars.empty())
+        g_stars += L' ';
+    g_stars += L'*';
+
+    wchar_t buf[128];
+    wsprintfW(buf, L"Коллизия на байте %d (попытка %d)", byteIndex + 1, attempt);
+    g_lastEvent = buf;
+}
+
+static void OnChannelBackoff(int delayMs)
+{
+    if (!g_lastEvent.empty())
+        g_lastEvent += L", задержка " + std::to_wstring(delayMs) + L" мс";
+    else
+        g_lastEvent = L"Задержка " + std::to_wstring(delayMs) + L" мс";
+}
+
+static void OnSessionFinished()
+{
+    const channel::Result& result = g_session.result();
+
+    g_attempts = result.attempts;
+    g_collisions = result.collisions;
+    g_busyWaits = result.busyWaits;
+
+    if (result.cancelled)
+    {
+        g_lastState = channel::State::Cancelled;
+        g_lastEvent = L"Передача отменена";
+    }
+    else if (result.success)
+    {
+        g_lastState = channel::State::Done;
+        g_lastEvent = L"Кадр передан";
+    }
+    else
+    {
+        g_lastState = channel::State::Error;
+        g_lastEvent = result.mediumError ? L"Ошибка обмена с портом" : L"Исчерпаны попытки передачи";
+    }
 }
 
 static int AliveCount()
@@ -191,11 +364,13 @@ static void AppendOutputChar(wchar_t ch)
     }
 }
 
-static HWND CreateFrameView(HWND parent, int x, int y, int w, int h, bool scroll)
+static HWND CreateFrameView(HWND parent, int x, int y, int w, int h, bool scroll, bool horizontalOnly = false)
 {
     DWORD style = WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY;
     if (scroll)
-        style |= WS_VSCROLL | WS_HSCROLL | ES_AUTOVSCROLL;
+        style |= WS_VSCROLL | WS_HSCROLL | ES_AUTOVSCROLL | ES_AUTOHSCROLL;
+    if (horizontalOnly)
+        style |= WS_HSCROLL | ES_AUTOHSCROLL;
 
     HWND ctl = CreateWindowExW(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
         style, x, y, w, h, parent, nullptr, nullptr, nullptr);
@@ -245,7 +420,7 @@ static void AppendRichText(HWND edit, const std::wstring& text, const std::vecto
     SendMessageW(edit, EM_SETREADONLY, TRUE, 0);
     SendMessageW(edit, EM_SCROLLCARET, 0, 0);
     SendMessageW(edit, WM_VSCROLL, SB_BOTTOM, 0);
-    SendMessageW(edit, WM_HSCROLL, SB_LEFT, 0);
+    SendMessageW(edit, EM_LINESCROLL, static_cast<WPARAM>(-32768), 0);
 }
 
 static std::wstring FromUtf8(const std::vector<uint8_t>& data)
@@ -328,12 +503,15 @@ static void SendFrameData(const std::vector<uint8_t>& data)
         err = frame::injectError(sent, frame::ERROR_PERCENT);
 
     frame::StuffResult s = err.applied ? frame::stuff(frame::serializeBody(sent)) : clean;
-    std::vector<uint8_t> bytes = s.bytes;
-    bytes.insert(bytes.end(), frame::FLAG, frame::FLAG + frame::FLAG_LEN);
-    g_serial.sendBytes(bytes.data(), bytes.size());
 
-    if (g_statusView)
-        AppendTxFrameView(g_statusView, frame::makeView(f, clean, sent, s, err), kTxColor);
+    TxJob job;
+    job.bytes = s.bytes;
+    job.bytes.insert(job.bytes.end(), frame::FLAG, frame::FLAG + frame::FLAG_LEN);
+    job.view = frame::makeView(f, clean, sent, s, err);
+    job.config.enabled = g_multiAccessEnabled;
+    // Порция зависит от скорости порта, чтобы окно не замирало на медленном канале.
+    job.config.chunkBytes = std::max(1, std::min(16, static_cast<int>(g_currentBaud / 1000)));
+    g_txQueue.push_back(std::move(job));
 }
 
 static void SendLine(const std::wstring& line)
@@ -360,8 +538,106 @@ static void SendLine(const std::wstring& line)
 
 static void RefreshStatus()
 {
-    std::wstring tx = L"Передано байт: " + std::to_wstring(g_serial.transmitted());
-    SetWindowTextW(g_statusTx, tx.c_str());
+    if (g_statusTx)
+        SetLabel(g_statusTx, L"Передано байт: " + std::to_wstring(g_serial.transmitted()));
+
+    if (g_statusState)
+    {
+        std::wstring text = L"Состояние канала: ";
+        COLORREF color = StateColor(g_lastState);
+
+        if (!g_multiAccessEnabled && !g_session.running())
+        {
+            text += L"эмуляция выключена";
+            color = RGB(110, 110, 110);
+        }
+        else
+        {
+            text += StateText(g_lastState);
+        }
+
+        SetLabel(g_statusState, text);
+        if (color != g_stateColor)
+        {
+            g_stateColor = color;
+            InvalidateRect(g_statusState, nullptr, TRUE);
+        }
+    }
+
+    if (g_statusStars)
+    {
+        SetLabel(g_statusStars, g_stars.empty() ? L"—" : g_stars);
+
+        const COLORREF color = g_stars.empty() ? RGB(128, 128, 128) : RGB(200, 0, 0);
+        if (color != g_starsColor)
+        {
+            g_starsColor = color;
+            InvalidateRect(g_statusStars, nullptr, TRUE);
+        }
+    }
+
+    if (g_statusCounters)
+    {
+        wchar_t buf[512];
+        wsprintfW(buf, L"Попытки: %d   Коллизий: %d   Ожиданий канала: %d",
+                  g_attempts, g_collisions, g_busyWaits);
+        std::wstring counters = buf;
+        if (!g_lastEvent.empty())
+            counters += L"   |   " + g_lastEvent;
+        SetLabel(g_statusCounters, counters);
+    }
+
+    if (g_statusView)
+    {
+        if (!g_pendingViews.empty())
+        {
+            for (const frame::FrameView& view : g_pendingViews)
+                AppendTxFrameView(g_statusView, view, kTxColor);
+            g_pendingViews.clear();
+        }
+    }
+    else
+    {
+        g_pendingViews.clear();
+    }
+}
+
+static void StartNextFrame()
+{
+    if (g_session.running() || g_txQueue.empty())
+        return;
+
+    TxJob job = std::move(g_txQueue.front());
+    g_txQueue.pop_front();
+
+    g_stars.clear();
+    g_attempts = 0;
+    g_collisions = 0;
+    g_busyWaits = 0;
+    g_lastState = channel::State::Listening;
+    g_lastEvent = L"Кадр подготовлен к передаче";
+    g_pendingViews.push_back(std::move(job.view));
+
+    g_session.start(std::move(job.bytes), job.config);
+}
+
+static void EngineTick()
+{
+    bool justStarted = false;
+
+    if (!g_session.running() && !g_txQueue.empty())
+    {
+        StartNextFrame();
+        justStarted = true;
+    }
+
+    if (g_session.running() && !justStarted)
+    {
+        if (!g_session.tick())
+            OnSessionFinished();
+    }
+
+    RefreshStatus();
 }
 
 static void CheckAllWindowsClosed()
@@ -452,7 +728,7 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             16, 42, 320, 300, hwnd, nullptr, nullptr, nullptr);
         SetFont(g_comboPort);
 
-        CreateLabel(hwnd, L"Скорость порта (бод)", 16, 92, 140, 20);
+        CreateLabel(hwnd, L"Скорость порта (бод)", 16, 92, 160, 20);
 
         g_comboBaud = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", L"",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST,
@@ -470,9 +746,32 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         wsprintfW(errText, L"Эмуляция ошибок (вероятность %d %%)", frame::ERROR_PERCENT);
         g_checkErrors = CreateWindowExW(0, L"BUTTON", errText,
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-            16, 158, 320, 22, hwnd, nullptr, nullptr, nullptr);
+            16, 158, 330, 22, hwnd, nullptr, nullptr, nullptr);
         SetFont(g_checkErrors);
         SendMessageW(g_checkErrors, BM_SETCHECK, BST_CHECKED, 0);
+
+        HWND group = CreateWindowExW(0, L"BUTTON", L"",
+            WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+            8, 184, 344, 156, hwnd, nullptr, nullptr, nullptr);
+        SetFont(group);
+
+        g_checkMultiAccess = CreateWindowExW(0, L"BUTTON", L"Эмуляция множественного доступа",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+            20, 210, 320, 22, hwnd, nullptr, nullptr, nullptr);
+        SetFont(g_checkMultiAccess);
+        SendMessageW(g_checkMultiAccess, BM_SETCHECK, BST_CHECKED, 0);
+
+        wchar_t buf[128];
+        wsprintfW(buf, L"Занятость канала: %d %%", channel::BUSY_PERCENT);
+        CreateLabel(hwnd, buf, 40, 238, 296, 18);
+
+        wsprintfW(buf, L"Коллизия: %d %%", channel::COLLISION_PERCENT);
+        CreateLabel(hwnd, buf, 40, 258, 296, 18);
+
+        CreateLabel(hwnd, L"Коллизия: в отношении байта", 40, 278, 296, 18);
+
+        wsprintfW(buf, L"Jam-сигнал: %d байта 0x%02X", channel::JAM_BYTES, channel::JAM_VALUE);
+        CreateLabel(hwnd, buf, 40, 298, 296, 18);
 
         FillPortCombo();
         return 0;
@@ -493,14 +792,30 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         if (ctl == g_comboPort && code == CBN_SELCHANGE) {
             int sel = static_cast<int>(SendMessageW(g_comboPort, CB_GETCURSEL, 0, 0));
             if (sel != CB_ERR && sel < static_cast<int>(g_ports.size())) {
-                g_currentPort = g_ports[sel];
                 int baudSel = static_cast<int>(SendMessageW(g_comboBaud, CB_GETCURSEL, 0, 0));
                 if (baudSel == CB_ERR)
                     baudSel = kDefaultBaudIndex;
-                g_serial.open(g_currentPort, kBaudRates[baudSel]);
+
+                const std::wstring port = g_ports[sel];
+                const DWORD baud = kBaudRates[baudSel];
+
+                if (!g_serial.open(port, baud)) {
+                    std::wstring error = g_serial.lastError();
+                    if (error.empty())
+                        error = L"Не удалось открыть выбранный COM-порт.";
+                    MessageBoxW(hwnd, error.c_str(), L"Ошибка открытия порта", MB_ICONERROR);
+                    return 0;
+                }
+
+                g_currentPort = port;
+                g_currentBaud = baud;
                 g_receiver = frame::Receiver();
                 g_pendingText.clear();
+                g_txQueue.clear();
+
+                // Номер порта и скорость выбираются один раз при инициализации.
                 EnableWindow(g_comboPort, FALSE);
+                EnableWindow(g_comboBaud, FALSE);
                 g_portSelected = true;
                 UpdateCloseButtons();
                 RefreshStatus();
@@ -513,12 +828,8 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             return 0;
         }
 
-        if (ctl == g_comboBaud && code == CBN_SELCHANGE) {
-            int sel = static_cast<int>(SendMessageW(g_comboBaud, CB_GETCURSEL, 0, 0));
-            if (sel != CB_ERR && g_serial.isOpen()) {
-                g_serial.open(g_currentPort, kBaudRates[sel]);
-                g_receiver = frame::Receiver();
-            }
+        if (ctl == g_checkMultiAccess && code == BN_CLICKED) {
+            g_multiAccessEnabled = SendMessageW(g_checkMultiAccess, BM_GETCHECK, 0, 0) == BST_CHECKED;
             RefreshStatus();
             return 0;
         }
@@ -533,7 +844,13 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         return 0;
 
     case WM_DESTROY:
-        if (hwnd == g_controlWnd) { g_controlWnd = nullptr; g_checkErrors = nullptr; }
+        if (hwnd == g_controlWnd) {
+            g_controlWnd = nullptr;
+            g_comboPort = nullptr;
+            g_comboBaud = nullptr;
+            g_checkErrors = nullptr;
+            g_checkMultiAccess = nullptr;
+        }
         UpdateCloseButtons();
         CheckAllWindowsClosed();
         return 0;
@@ -672,22 +989,73 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         RECT rc = {};
         GetClientRect(hwnd, &rc);
 
-        g_statusTx = CreateLabel(hwnd, L"Передано байт: 0", 16, 12, 250, 20);
+        const bool wide = rc.right >= 900;
 
-        g_statusHead = CreateFrameView(hwnd, 12, 38, rc.right - 24, 26, false);
+        g_statusTx = CreateLabel(hwnd, L"Передано байт: 0", 16, 4, 300, 18);
+
+        int starsTitleY = 24;
+        int starsY = 22;
+        int countersY = 46;
+        int headY = 68;
+
+        if (wide) {
+            g_statusState = CreateStatusText(hwnd, L"Состояние канала: ожидание",
+                330, 4, rc.right - 346, 18);
+        } else {
+            g_statusState = CreateStatusText(hwnd, L"Состояние канала: ожидание",
+                16, 24, rc.right - 32, 18);
+            starsTitleY = 44;
+            starsY = 42;
+            countersY = 70;
+            headY = 92;
+        }
+
+        const int viewY = headY + 28;
+
+        g_statusStarsTitle = CreateLabel(hwnd, L"Коллизии последнего кадра:",
+            16, starsTitleY, 230, 18);
+
+        g_statusStars = CreateWindowExW(0, L"STATIC", L"—",
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            250, starsY, rc.right - 266, 24, hwnd, nullptr, nullptr, nullptr);
+        SendMessageW(g_statusStars, WM_SETFONT,
+            reinterpret_cast<WPARAM>(g_boldFont ? g_boldFont : g_font), TRUE);
+
+        g_statusCounters = CreateLabel(hwnd,
+            L"Попытки: 0   Коллизий: 0   Ожиданий канала: 0",
+            16, countersY, rc.right - 32, 18);
+
+        g_statusHead = CreateFrameView(hwnd, 12, headY, rc.right - 24, 26, false);
         AppendRichText(g_statusHead, frame::fieldNames(), {}, kTxColor);
+        // Заголовок полей показываем с начала строки, а не с конца.
+        SendMessageW(g_statusHead, EM_SETSEL, 0, 0);
+        SendMessageW(g_statusHead, EM_SCROLLCARET, 0, 0);
 
-        g_statusView = CreateFrameView(hwnd, 12, 70, rc.right - 24, rc.bottom - 82, true);
+        g_statusView = CreateFrameView(hwnd, 12, viewY, rc.right - 24,
+            rc.bottom - viewY - 8, true);
 
-        SetTimer(hwnd, 1, 1000, nullptr);
         RefreshStatus();
+        SetTimer(hwnd, kEngineTimer, kEngineIntervalMs, nullptr);
         return 0;
     }
 
     case WM_TIMER:
-        if (wParam == 1)
-            RefreshStatus();
+        if (wParam == kEngineTimer)
+            EngineTick();
         return 0;
+
+    case WM_CTLCOLORSTATIC: {
+        HDC hdc = reinterpret_cast<HDC>(wParam);
+        HWND child = reinterpret_cast<HWND>(lParam);
+        SetBkMode(hdc, TRANSPARENT);
+
+        if (child == g_statusStars)
+            SetTextColor(hdc, g_starsColor);
+        else
+            SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
+
+        return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+    }
 
     case WM_INITMENUPOPUP:
         if (lParam == 0) {
@@ -704,10 +1072,16 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         return 0;
 
     case WM_DESTROY:
+        KillTimer(hwnd, kEngineTimer);
         if (hwnd == g_statusWnd) g_statusWnd = nullptr;
         g_statusTx = nullptr;
+        g_statusState = nullptr;
+        g_statusStarsTitle = nullptr;
+        g_statusStars = nullptr;
+        g_statusCounters = nullptr;
         g_statusHead = nullptr;
         g_statusView = nullptr;
+        g_pendingViews.clear();
         UpdateCloseButtons();
         CheckAllWindowsClosed();
         return 0;
@@ -753,6 +1127,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 {
     g_font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
 
+    LOGFONTW lf = {};
+    if (GetObjectW(g_font, sizeof(lf), &lf)) {
+        lf.lfWeight = FW_BOLD;
+        lf.lfHeight = -18;
+        lstrcpynW(lf.lfFaceName, L"Consolas", LF_FACESIZE);
+        g_boldFont = CreateFontIndirectW(&lf);
+    }
+    if (!g_boldFont)
+        g_boldFont = g_font;
+
     if (!LoadLibraryW(L"Msftedit.dll")) {
         MessageBoxW(nullptr, L"Не удалось загрузить Msftedit.dll.", L"Ошибка", MB_ICONERROR);
         return 1;
@@ -763,10 +1147,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         return 1;
     }
 
+    g_session.setSend([](const uint8_t *data, size_t size) {
+        return g_serial.sendBytes(data, size);
+        });
+    g_session.setOnState([](channel::State state) {
+        OnChannelState(state);
+        });
+    g_session.setOnCollision([](int byteIndex, int attempt) {
+        OnChannelCollision(byteIndex, attempt);
+        });
+    g_session.setOnBackoff([](int delayMs) {
+        OnChannelBackoff(delayMs);
+        });
+
     int x = 40;
     const DWORD WindowStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     g_controlWnd = CreateWindowExW(0, kControlClass, L"Управление",
-        WindowStyle, x, 60, 370, 260,
+        WindowStyle, x, 60, 370, 400,
         nullptr, nullptr, hInstance, nullptr);
     g_inputWnd = CreateWindowExW(0, kInputClass, L"Ввод сообщений",
         WindowStyle, x + 420, 60, 500, 330,
@@ -774,12 +1171,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     g_outputWnd = CreateWindowExW(0, kOutputClass, L"Вывод сообщений",
         WindowStyle, x + 420, 410, 500, 370,
         nullptr, nullptr, hInstance, nullptr);
-    int screenW = GetSystemMetrics(SM_CXSCREEN);
-    int screenH = GetSystemMetrics(SM_CYSCREEN);
+    const int screenW = GetSystemMetrics(SM_CXSCREEN);
+    RECT work = { 0, 0, screenW, GetSystemMetrics(SM_CYSCREEN) };
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+
+    // Широкое окно состояния — внизу, как в предыдущих лабораторных.
     int statusX = x;
     int statusY = 790;
     int statusW = screenW - 80;
-    int statusH = screenH - statusY - 60;
+    int statusH = work.bottom - statusY - 20;
     if (statusH < 200) {
         statusY = 610;
         statusW = 420;
@@ -796,6 +1196,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     }
 
     UpdateCloseButtons();
+
+    // TEMP-DEMO: проверить отображение коллизий без COM-порта.
+    g_stars = L"* * *";
+    g_attempts = 2;
+    g_collisions = 3;
+    g_busyWaits = 1;
+    g_lastState = channel::State::Backoff;
+    g_lastEvent = L"Коллизия на байте 12 (попытка 2), задержка 50 мс";
 
     g_serial.setRxCallback([](uint8_t b) {
         if (g_outputWnd)
@@ -819,6 +1227,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         DispatchMessageW(&msg);
     }
 
+    g_session.cancel();
     g_serial.close();
+
+    if (g_boldFont && g_boldFont != g_font)
+        DeleteObject(g_boldFont);
+
     return static_cast<int>(msg.wParam);
 }
