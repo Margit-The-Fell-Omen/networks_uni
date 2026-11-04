@@ -247,33 +247,25 @@ namespace frame {
     vector<Frame> Receiver::feed(const uint8_t *p, size_t n) {
         m_buf.insert(m_buf.end(), p, p + n);
         vector<Frame> out;
-        process(out, false);
+        process(out);
         return out;
     }
 
-    vector<Frame> Receiver::flush() {
-        vector<Frame> out;
-        process(out, true);
-        return out;
-    }
-
-    void Receiver::process(vector<Frame> &out, bool isFinal) {
+    void Receiver::process(vector<Frame> &out) {
         while (true) {
             long start = findFlag(m_buf, 0);
             if (start < 0) {
-                if (isFinal)
-                    m_buf.clear();
-                else if (m_buf.size() > FLAG_LEN)
-                    m_buf.erase(m_buf.begin(), m_buf.end() - FLAG_LEN);
+                if (m_buf.size() > FLAG_LEN - 1)
+                    m_buf.erase(m_buf.begin(), m_buf.end() - (FLAG_LEN - 1));
                 return;
             }
             m_buf.erase(m_buf.begin(), m_buf.begin() + start);  // мусор до флага
 
             long next = findFlag(m_buf, FLAG_LEN);
-            size_t end;
-            if (next >= 0)   end = (size_t)next;
-            else if (isFinal)  end = m_buf.size();
-            else             return;                 // кадр ещё не пришёл целиком — ждём
+            if (next < 0)
+                return;                              // кадр ещё не пришёл целиком — ждём
+
+            size_t end = (size_t)next;
 
             vector<uint8_t> body = destuff(m_buf.data() + FLAG_LEN, end - FLAG_LEN);
             Frame f;
