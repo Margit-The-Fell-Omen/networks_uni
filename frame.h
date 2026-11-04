@@ -27,7 +27,7 @@ namespace frame
     // длина кадра не изменилась.
     constexpr size_t FCS_LEN       = 2;
     constexpr size_t RESERVED_LEN  = 9;
-    constexpr size_t SERVICE_LEN   = 2 + FCS_LEN;   // адрес назначения + адрес источника + FCS
+    constexpr size_t SERVICE_LEN   = 2 + FCS_LEN;   // флаг начала сообщения + счётчик оставшихся кадров + FCS
     constexpr size_t MAX_FRAME_LEN = 100;
     constexpr size_t MAX_DATA_LEN  = 77;
 
@@ -35,11 +35,11 @@ namespace frame
     constexpr size_t MAX_STUFFED_BITS = MAX_BODY_BITS + MAX_BODY_BITS / 63;
     constexpr size_t MAX_STUFFED_LEN  = FLAG_LEN + (MAX_STUFFED_BITS + 7) / 8;
 
-    // | Флаг (8) | Адрес назначения (1) | Адрес источника (1) | Данные (1..77) | FCS (2) | Резерв (9) |
+    // | Флаг (8) | Флаг начала (1) | Осталось кадров (1) | Данные (1..77) | FCS (2) | Резерв (9) |
     struct Frame
     {
-        uint8_t frameType = 0;
-        uint8_t sequenceNumber = 0;
+        uint8_t messageStart = 0;  // пока 0; в будущем 1 — первый кадр сообщения
+        uint8_t framesLeft = 0;    // пока 0; в будущем — сколько кадров осталось (N..1)
         std::vector<uint8_t> data; // полезная нагрузка — UTF-8 байты сообщения
         uint8_t fcs[FCS_LEN] = {}; // циклический код только от поля данных
         uint8_t reserved[RESERVED_LEN] = {};
