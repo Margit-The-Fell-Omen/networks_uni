@@ -281,10 +281,10 @@ namespace frame {
     static const size_t FIELD_COUNT = 5;
 
     static const wchar_t *FIELD_NAMES[FIELD_COUNT] = {
-        L"Флаг", L"Начало сообщения", L"Осталось кадров", L"FCS", L"Данные"
+        L"Флаг", L"Начало сообщения", L"Осталось кадров", L"Данные", L"FCS"
     };
 
-    constexpr size_t COLUMN_WIDTH[FIELD_COUNT] = { 72, 16, 16, 20, 120 };
+    constexpr size_t COLUMN_WIDTH[FIELD_COUNT] = { 72, 16, 16, 120, 20 };
 
     static std::wstring valueString(const uint8_t *p, size_t n) {
         std::wstring out;
@@ -377,7 +377,7 @@ namespace frame {
         appendCentered(outText, valueString(FLAG, FLAG_LEN), COLUMN_WIDTH[0]);
         outMask.assign(outText.size(), false);
 
-        int outOrder[4] = { 0, 1, 3, 2 };
+        int outOrder[4] = { 0, 1, 2, 3 };
 
         for (int i = 0; i < 4; i++) {
             int k = outOrder[i];
@@ -414,10 +414,10 @@ namespace frame {
         appendCentered(view.before, valueString(&f.framesLeft, 1), COLUMN_WIDTH[2]);
         view.before += L' ';
 
-        appendCentered(view.before, valueString(f.fcs, FCS_LEN), COLUMN_WIDTH[3]);
+        appendCentered(view.before, valueString(f.data.data(), f.data.size()), COLUMN_WIDTH[3]);
         view.before += L' ';
 
-        appendCentered(view.before, valueString(f.data.data(), f.data.size()), COLUMN_WIDTH[4]);
+        appendCentered(view.before, valueString(f.fcs, FCS_LEN), COLUMN_WIDTH[4]);
 
         buildStuffedRow(f, s, -1, view.after, view.afterUnderline);
         return view;
