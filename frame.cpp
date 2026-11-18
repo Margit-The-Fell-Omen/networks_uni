@@ -229,7 +229,9 @@ namespace frame {
         return bitsToBytes(output);
     }
 
-    static long findFlag(const vector<uint8_t> &buf, size_t from) {
+    static constexpr size_t NOT_FOUND = static_cast<size_t>(-1);
+
+    static size_t findFlag(const vector<uint8_t> &buf, size_t from) {
         for (size_t i = from; i + FLAG_LEN <= buf.size(); i++) {
             bool match = true;
             for (size_t k = 0; k < FLAG_LEN; k++) {
@@ -239,9 +241,17 @@ namespace frame {
                 }
             }
             if (match)
-                return (long)i;
+                return i;
         }
-        return -1;
+        return NOT_FOUND;
+    }
+
+    static size_t findEnd(const vector<uint8_t> &buf, size_t from) {
+        for (size_t i = from; i < buf.size(); i++) {
+            if (buf[i] == END_BYTE)
+                return i;
+        }
+        return NOT_FOUND;
     }
 
     vector<Frame> Receiver::feed(const uint8_t *p, size_t n) {
@@ -253,19 +263,17 @@ namespace frame {
 
     void Receiver::process(vector<Frame> &out) {
         while (true) {
-            long start = findFlag(m_buf, 0);
-            if (start < 0) {
+            const size_t start = findFlag(m_buf, 0);
+            if (start == NOT_FOUND) {
                 if (m_buf.size() > FLAG_LEN - 1)
                     m_buf.erase(m_buf.begin(), m_buf.end() - (FLAG_LEN - 1));
                 return;
             }
             m_buf.erase(m_buf.begin(), m_buf.begin() + start);  // мусор до флага
 
-            long next = findFlag(m_buf, FLAG_LEN);
-            if (next < 0)
+            const size_t end = findEnd(m_buf, FLAG_LEN);
+            if (end == NOT_FOUND)
                 return;                              // кадр ещё не пришёл целиком — ждём
-
-            size_t end = (size_t)next;
 
             vector<uint8_t> body = destuff(m_buf.data() + FLAG_LEN, end - FLAG_LEN);
             Frame f;
@@ -278,9 +286,8 @@ namespace frame {
                     out.push_back(f);
             }
 
-            // Оставляем найденный флаг в буфере: он может быть началом
-            // следующего кадра, а не только закрывающим флагом текущего.
-            m_buf.erase(m_buf.begin(), m_buf.begin() + end);
+            // Съедаем кадр вместе с завершающим '\n'
+            m_buf.erase(m_buf.begin(), m_buf.begin() + end + 1);
             if (m_buf.empty())
                 return;
         }

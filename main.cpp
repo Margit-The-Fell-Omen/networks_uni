@@ -506,7 +506,7 @@ static void SendFrameData(const std::vector<uint8_t>& data)
 
     TxJob job;
     job.bytes = s.bytes;
-    job.bytes.insert(job.bytes.end(), frame::FLAG, frame::FLAG + frame::FLAG_LEN);
+    job.bytes.insert(job.bytes.end(), frame::END_BYTE);
     job.view = frame::makeView(f, clean, sent, s, err);
     job.config.enabled = g_multiAccessEnabled;
     // Порция зависит от скорости порта, чтобы окно не замирало на медленном канале.
