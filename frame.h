@@ -12,6 +12,7 @@ namespace frame
 {
     constexpr size_t  FLAG_LEN = 8;
     constexpr uint8_t FLAG[FLAG_LEN] = {'4', '5', '0', '5', '0', '1', '-', '1'};
+    constexpr uint8_t END_BYTE = '\n';   // закрывающий флаг кадра
 
     constexpr size_t RESERVED_LEN  = 10;
     constexpr size_t SERVICE_LEN   = 3;     // флаг начала сообщения + счётчик оставшихся кадров + FCS

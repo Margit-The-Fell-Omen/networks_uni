@@ -282,7 +282,7 @@ static void SendFrameData(const std::vector<uint8_t>& data)
 
     frame::StuffResult s = frame::stuff(frame::serializeBody(f));
     std::vector<uint8_t> bytes = s.bytes;
-    bytes.insert(bytes.end(), frame::FLAG, frame::FLAG + frame::FLAG_LEN);
+    bytes.insert(bytes.end(), frame::END_BYTE);
     g_serial.sendBytes(bytes.data(), bytes.size());
 
     if (g_statusView)
