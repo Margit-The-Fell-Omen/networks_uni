@@ -12,6 +12,7 @@ namespace frame
 {
     constexpr size_t  FLAG_LEN = 8;
     constexpr uint8_t FLAG[FLAG_LEN] = {'4', '5', '0', '5', '0', '1', '-', '1'};
+    constexpr uint8_t END_BYTE = '\n';   // закрывающий флаг кадра
 
     // Параметры кодирования (циклический код, вариант 1).
     // Расчёт длины поля FCS:
