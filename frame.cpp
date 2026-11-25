@@ -92,6 +92,8 @@ namespace frame {
         f.fcs = body[2 + dataLen];
         for (size_t i = 0; i < RESERVED_LEN; i++) {
             f.reserved[i] = body[3 + dataLen + i];
+            if (f.reserved[i] != 0)   // резерв обязан быть нулевым, иначе кадр сбойный
+                return false;
         }
         return true;
     }
@@ -165,6 +167,30 @@ namespace frame {
         return -1;
     }
 
+    // Конец кадра — 10 зарезервированных нулей. Возвращает позицию сразу за ними.
+    // Нули могут начаться раньше (например, с FCS = 0), поэтому берём конец всей
+    // нулевой последовательности: кадр заканчивается там, где она закончилась.
+    // Если буфер оборвался ровно на 10 нулях — ждём ещё байт: последовательность
+    // может продолжиться, и тогда кадр ещё не дослан.
+    static long findFrameEnd(const vector<uint8_t> &buf, size_t from, bool isFinal) {
+        for (size_t i = from; i + RESERVED_LEN <= buf.size(); i++) {
+            if (buf[i] != 0)
+                continue;
+
+            size_t j = i;
+            while (j < buf.size() && buf[j] == 0)
+                j++;
+
+            if (j - i < RESERVED_LEN)
+                continue;
+            if (j == buf.size() && !isFinal && j - i == RESERVED_LEN)
+                return -1;
+
+            return (long)j;
+        }
+        return -1;
+    }
+
     vector<Frame> Receiver::feed(const uint8_t *p, size_t n) {
         m_buf.insert(m_buf.end(), p, p + n);
         vector<Frame> out;
@@ -190,11 +216,14 @@ namespace frame {
             }
             m_buf.erase(m_buf.begin(), m_buf.begin() + start);  // мусор до флага
 
-            long next = findFlag(m_buf, FLAG_LEN);
-            size_t end;
-            if (next >= 0)   end = (size_t)next;
-            else if (isFinal)  end = m_buf.size();
-            else             return;                 // кадр ещё не пришёл целиком — ждём
+            // Конец кадра ищем по 10 зарезервированным нулям, а не по следующему флагу
+            long endPos = findFrameEnd(m_buf, FLAG_LEN, isFinal);
+            if (endPos < 0) {
+                if (isFinal)
+                    m_buf.clear();               // кадр так и не дослан — выбрасываем
+                return;                           // кадр ещё не пришёл целиком — ждём
+            }
+            size_t end = static_cast<size_t>(endPos);
 
             vector<uint8_t> body = destuff(m_buf.data() + FLAG_LEN, end - FLAG_LEN);
             Frame f;

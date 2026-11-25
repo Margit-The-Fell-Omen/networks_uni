@@ -280,10 +280,10 @@ static void SendFrameData(const std::vector<uint8_t>& data)
     frame::Frame f;
     f.data = data;
 
+    // Кадр начинается флагом и заканчивается 10 нулями резерва,
+    // поэтому отдельный завершающий флаг больше не отправляем.
     frame::StuffResult s = frame::stuff(frame::serializeBody(f));
-    std::vector<uint8_t> bytes = s.bytes;
-    bytes.insert(bytes.end(), frame::FLAG, frame::FLAG + frame::FLAG_LEN);
-    g_serial.sendBytes(bytes.data(), bytes.size());
+    g_serial.sendBytes(s.bytes.data(), s.bytes.size());
 
     if (g_statusView)
         AppendFrameView(g_statusView, frame::makeView(f, s), kTxColor);
