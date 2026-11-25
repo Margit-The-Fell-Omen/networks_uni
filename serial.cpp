@@ -37,18 +37,15 @@ bool SerialPort::open(const std::wstring &port, DWORD baud)
 
     std::wstring path = L"\\\\.\\" + port;
 
-    // overlapped, С‡С‚РѕР±С‹ Р·Р°РїРёСЃСЊ РЅРµ Р¶РґР°Р»Р°, РїРѕРєР° РІРёСЃРёС‚ ReadFile РІ РїРѕС‚РѕРєРµ РїСЂРёС‘РјР°
+    // overlapped, чтобы запись не ждала, пока висит ReadFile в потоке приёма
     m_h = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
                       nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
-    if (m_h == INVALID_HANDLE_VALUE) {
-        m_lastError = L"РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РєСЂС‹С‚СЊ " + port + L" (РєРѕРґ " + std::to_wstring(GetLastError()) + L")";
+    if (m_h == INVALID_HANDLE_VALUE)
         return false;
-    }
 
     DCB dcb = {};
     dcb.DCBlength = sizeof(dcb);
     if (!GetCommState(m_h, &dcb)) {
-        m_lastError = L"РќРµ СѓРґР°Р»РѕСЃСЊ РїСЂРѕС‡РёС‚Р°С‚СЊ РїР°СЂР°РјРµС‚СЂС‹ РїРѕСЂС‚Р°";
         close();
         return false;
     }
@@ -67,14 +64,13 @@ bool SerialPort::open(const std::wstring &port, DWORD baud)
     dcb.fAbortOnError = FALSE;
 
     if (!SetCommState(m_h, &dcb)) {
-        m_lastError = L"РќРµ СѓРґР°Р»РѕСЃСЊ СѓСЃС‚Р°РЅРѕРІРёС‚СЊ РїР°СЂР°РјРµС‚СЂС‹ РїРѕСЂС‚Р°";
         close();
         return false;
     }
 
     COMMTIMEOUTS to = {};
-    // MAXDWORD/MAXDWORD/N: ReadFile РІРѕР·РІСЂР°С‰Р°РµС‚СЃСЏ СЃСЂР°Р·Сѓ, РєР°Рє РїСЂРёС€С‘Р» С…РѕС‚СЏ Р±С‹ РѕРґРёРЅ Р±Р°Р№С‚,
-    // Р° РµСЃР»Рё РЅРёС‡РµРіРѕ РЅРµС‚ - С‡РµСЂРµР· N РјСЃ
+    // MAXDWORD/MAXDWORD/N: ReadFile возвращается сразу, как пришёл хотя бы один байт,
+    // а если ничего нет - через N мс
     to.ReadIntervalTimeout = MAXDWORD;
     to.ReadTotalTimeoutMultiplier = MAXDWORD;
     to.ReadTotalTimeoutConstant = 5;
@@ -84,7 +80,6 @@ bool SerialPort::open(const std::wstring &port, DWORD baud)
 
     PurgeComm(m_h, PURGE_RXCLEAR | PURGE_TXCLEAR | PURGE_RXABORT | PURGE_TXABORT);
 
-    m_lastError.clear();
     m_running = true;
     m_rx = std::thread(&SerialPort::rxLoop, this);
     return true;
@@ -118,13 +113,10 @@ bool SerialPort::sendBytes(const uint8_t *data, size_t n)
     BOOL ok = WriteFile(m_h, data, static_cast<DWORD>(n), &written, &ov);
     if (!ok && GetLastError() == ERROR_IO_PENDING)
         ok = GetOverlappedResult(m_h, &ov, &written, TRUE);
-    DWORD err = GetLastError();
     CloseHandle(ov.hEvent);
 
-    if (!ok || written != static_cast<DWORD>(n)) {
-        m_lastError = L"РћС€РёР±РєР° РїРµСЂРµРґР°С‡Рё РґР°РЅРЅС‹С… (РєРѕРґ " + std::to_wstring(err) + L")";
+    if (!ok || written != static_cast<DWORD>(n))
         return false;
-    }
 
     m_tx.fetch_add(written);
     return true;
@@ -147,7 +139,7 @@ void SerialPort::rxLoop()
             ok = GetOverlappedResult(m_h, &ov, &bytesRead, TRUE);
 
         if (!ok) {
-            // РѕС‚РјРµРЅР° РёР· close() РёР»Рё РѕС€РёР±РєР° РїРѕСЂС‚Р° - РЅРµ РєСЂСѓС‚РёРјСЃСЏ РІС…РѕР»РѕСЃС‚СѓСЋ
+            // отмена из close() или ошибка порта - не крутимся вхолостую
             if (m_running.load())
                 Sleep(10);
             continue;
