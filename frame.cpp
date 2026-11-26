@@ -53,11 +53,6 @@ namespace frame {
 
     static const uint64_t FLAG_START = FLAG64 >> 1;
 
-    // Битстаффинг применяется только к полю данных: сообщение занимает 2 байта,
-    // дальше идут MAX_DATA_LEN байт данных.
-    constexpr size_t DATA_START_BIT = 2 * 8;
-    constexpr size_t DATA_END_BIT   = (2 + MAX_DATA_LEN) * 8;
-
     static const uint64_t LAST_63_BITS = (uint64_t(1) << 63) - 1;
 
     static const int STUFF_BIT = (FLAG64 & 1) ? 0 : 1;
@@ -101,15 +96,10 @@ namespace frame {
             if (f.reserved[i] != 0)   // резерв обязан быть нулевым, иначе кадр сбойный
                 return false;
         }
-
-        // Нули в конце поля данных — добивка до фиксированного размера, а не данные
-        while (!f.data.empty() && f.data.back() == 0)
-            f.data.pop_back();
-
         return true;
     }
 
-    //Битстаффинг для передатчика: только поле данных
+    //Битстаффинг для передатчика
     StuffResult stuff (const vector<uint8_t> &body) {
         StuffResult result;
 
@@ -121,8 +111,7 @@ namespace frame {
             result.bits.push_back(input[i] == 1);
             result.inserted.push_back(false);
 
-            const bool inData = (i >= DATA_START_BIT && i < DATA_END_BIT);
-            if (inData && flagStarting(window)) {
+            if (flagStarting(window)) {
                 pushToWindow(window, STUFF_BIT);
                 result.bits.push_back(STUFF_BIT == 1);
                 result.inserted.push_back(true);
@@ -137,6 +126,7 @@ namespace frame {
         return result;
     }
 
+    //Обратный битстаффинг для приёмника
     vector <uint8_t> destuff (const uint8_t *p, size_t n) {
         vector <int> input = bytesToBits(p, n);
         uint64_t window = FLAG64;
@@ -152,11 +142,9 @@ namespace frame {
                 continue;
             }
 
-            const size_t bitIndex = output.size();
             output.push_back(input[i]);
 
-            const bool inData = (bitIndex >= DATA_START_BIT && bitIndex < DATA_END_BIT);
-            if (inData && flagStarting(window)) {
+            if (flagStarting(window)) {
                 skipNext = true;
             }
         }
@@ -170,6 +158,20 @@ namespace frame {
     static size_t findFlag(const vector<uint8_t> &buf, size_t from) {
         auto it = std::search(buf.begin() + from, buf.end(), FLAG, FLAG + FLAG_LEN);
         return it == buf.end() ? NOT_FOUND : static_cast<size_t>(it - buf.begin());
+    }
+
+    static size_t findEnd(const vector<uint8_t> &buf, size_t from) {
+        auto run = std::search_n(buf.begin() + from, buf.end(), RESERVED_LEN, uint8_t(0));
+        if (run == buf.end())
+            return NOT_FOUND;
+
+        auto end = std::find_if(run, buf.end(), [](uint8_t b) { return b != 0; });
+
+        const size_t runLength = static_cast<size_t>(end - run);
+        if (end == buf.end() && runLength == RESERVED_LEN)
+            return NOT_FOUND;
+
+        return static_cast<size_t>(end - buf.begin());
     }
 
     vector<Frame> Receiver::feed(const uint8_t *p, size_t n) {
@@ -189,23 +191,17 @@ namespace frame {
             }
             m_buf.erase(m_buf.begin(), m_buf.begin() + start);  // мусор до флага
 
-            // Тело фиксированной длины: дестаффим всё, что есть, и берём первые BODY_LEN
-            vector<uint8_t> raw = destuff(m_buf.data() + FLAG_LEN, m_buf.size() - FLAG_LEN);
-            if (raw.size() < BODY_LEN)
+            // Конец кадра ищем по 10 зарезервированным нулям, а не по следующему флагу
+            const size_t end = findEnd(m_buf, FLAG_LEN);
+            if (end == NOT_FOUND)
                 return;                           // кадр ещё не пришёл целиком — ждём
 
-            vector<uint8_t> body(raw.begin(), raw.begin() + BODY_LEN);
-
-            // Стаффинг детерминирован, поэтому его длина даёт размер кадра
-            const size_t frameLen = stuff(body).bytes.size();
-            if (m_buf.size() < frameLen)
-                return;
-
+            vector<uint8_t> body = destuff(m_buf.data() + FLAG_LEN, end - FLAG_LEN);
             Frame f;
             if (parseBody(body, f))
                 out.push_back(f);                    // сбойный кадр просто пропускаем
 
-            m_buf.erase(m_buf.begin(), m_buf.begin() + frameLen);
+            m_buf.erase(m_buf.begin(), m_buf.begin() + end);
             if (m_buf.empty())
                 return;
         }

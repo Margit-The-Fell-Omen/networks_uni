@@ -279,9 +279,9 @@ static void SendFrameData(const std::vector<uint8_t>& data)
 
     frame::Frame f;
     f.data = data;
-    if (f.data.size() < frame::MAX_DATA_LEN)
-        f.data.resize(frame::MAX_DATA_LEN, 0x00);   // добивка до фиксированного тела
 
+    // Кадр начинается флагом и заканчивается 10 нулями резерва,
+    // поэтому отдельный завершающий флаг больше не отправляем.
     frame::StuffResult s = frame::stuff(frame::serializeBody(f));
     g_serial.sendBytes(s.bytes.data(), s.bytes.size());
 
@@ -548,19 +548,12 @@ static LRESULT CALLBACK OutputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         std::vector<frame::Frame> frames = g_receiver.feed(&byte, 1);
         for (size_t i = 0; i < frames.size(); ++i) {
             std::wstring text = FromUtf8(frames[i].data);
-            for (size_t k = 0; k < text.size(); ++k) {
+            for (size_t k = 0; k < text.size(); ++k)
                 AppendOutputChar(text[k]);
-                if (text[k] == L'\r')               // после '\r' идёт добивка нулями
-                    break;
-            }
 
             if (g_statusView) {
-                // Показываем кадр в том виде, в каком он был на проводе — с добивкой
-                frame::Frame shown = frames[i];
-                if (shown.data.size() < frame::MAX_DATA_LEN)
-                    shown.data.resize(frame::MAX_DATA_LEN, 0x00);
-                frame::StuffResult s = frame::stuff(frame::serializeBody(shown));
-                AppendFrameView(g_statusView, frame::makeView(shown, s), kRxColor);
+                frame::StuffResult s = frame::stuff(frame::serializeBody(frames[i]));
+                AppendFrameView(g_statusView, frame::makeView(frames[i], s), kRxColor);
             }
         }
         return 0;
