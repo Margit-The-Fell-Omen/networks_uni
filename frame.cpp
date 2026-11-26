@@ -96,6 +96,11 @@ namespace frame {
             if (f.reserved[i] != 0)   // резерв обязан быть нулевым, иначе кадр сбойный
                 return false;
         }
+
+        // Нули в конце поля данных — добивка до фиксированного размера, а не данные
+        while (!f.data.empty() && f.data.back() == 0)
+            f.data.pop_back();
+
         return true;
     }
 
@@ -160,20 +165,6 @@ namespace frame {
         return it == buf.end() ? NOT_FOUND : static_cast<size_t>(it - buf.begin());
     }
 
-    static size_t findEnd(const vector<uint8_t> &buf, size_t from) {
-        auto run = std::search_n(buf.begin() + from, buf.end(), RESERVED_LEN, uint8_t(0));
-        if (run == buf.end())
-            return NOT_FOUND;
-
-        auto end = std::find_if(run, buf.end(), [](uint8_t b) { return b != 0; });
-
-        const size_t runLength = static_cast<size_t>(end - run);
-        if (end == buf.end() && runLength == RESERVED_LEN)
-            return NOT_FOUND;
-
-        return static_cast<size_t>(end - buf.begin());
-    }
-
     vector<Frame> Receiver::feed(const uint8_t *p, size_t n) {
         m_buf.insert(m_buf.end(), p, p + n);
         vector<Frame> out;
@@ -191,17 +182,21 @@ namespace frame {
             }
             m_buf.erase(m_buf.begin(), m_buf.begin() + start);  // мусор до флага
 
-            // Конец кадра ищем по 10 зарезервированным нулям, а не по следующему флагу
-            const size_t end = findEnd(m_buf, FLAG_LEN);
-            if (end == NOT_FOUND)
+            // Тело фиксированной длины: дестаффим всё, что есть, и берём первые BODY_LEN
+            vector<uint8_t> raw = destuff(m_buf.data() + FLAG_LEN, m_buf.size() - FLAG_LEN);
+            if (raw.size() < BODY_LEN)
                 return;                           // кадр ещё не пришёл целиком — ждём
 
-            vector<uint8_t> body = destuff(m_buf.data() + FLAG_LEN, end - FLAG_LEN);
+            vector<uint8_t> body(raw.begin(), raw.begin() + BODY_LEN);
+            const size_t frameLen = stuff(body).bytes.size();
+            if (m_buf.size() < frameLen)
+                return;
+
             Frame f;
             if (parseBody(body, f))
                 out.push_back(f);                    // сбойный кадр просто пропускаем
 
-            m_buf.erase(m_buf.begin(), m_buf.begin() + end);
+            m_buf.erase(m_buf.begin(), m_buf.begin() + frameLen);
             if (m_buf.empty())
                 return;
         }

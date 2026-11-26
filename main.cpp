@@ -279,14 +279,17 @@ static void SendFrameData(const std::vector<uint8_t>& data)
 
     frame::Frame f;
     f.data = data;
+    frame::Frame view = f;                          // в окно состояния — без добивки
+    if (f.data.size() < frame::MAX_DATA_LEN)
+        f.data.resize(frame::MAX_DATA_LEN, 0x00);   // добивка до фиксированного тела
 
-    // Кадр начинается флагом и заканчивается 10 нулями резерва,
-    // поэтому отдельный завершающий флаг больше не отправляем.
     frame::StuffResult s = frame::stuff(frame::serializeBody(f));
     g_serial.sendBytes(s.bytes.data(), s.bytes.size());
 
-    if (g_statusView)
-        AppendFrameView(g_statusView, frame::makeView(f, s), kTxColor);
+    if (g_statusView) {
+        frame::StuffResult vs = frame::stuff(frame::serializeBody(view));
+        AppendFrameView(g_statusView, frame::makeView(view, vs), kTxColor);
+    }
 }
 
 static void SendLine(const std::wstring& line)
@@ -548,8 +551,11 @@ static LRESULT CALLBACK OutputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         std::vector<frame::Frame> frames = g_receiver.feed(&byte, 1);
         for (size_t i = 0; i < frames.size(); ++i) {
             std::wstring text = FromUtf8(frames[i].data);
-            for (size_t k = 0; k < text.size(); ++k)
+            for (size_t k = 0; k < text.size(); ++k) {
                 AppendOutputChar(text[k]);
+                if (text[k] == L'\r')               // после '\r' идёт добивка нулями
+                    break;
+            }
 
             if (g_statusView) {
                 frame::StuffResult s = frame::stuff(frame::serializeBody(frames[i]));
