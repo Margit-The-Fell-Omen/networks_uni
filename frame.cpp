@@ -174,6 +174,11 @@ namespace frame {
             if (f.reserved[i] != 0)   // резерв обязан быть нулевым, иначе кадр сбойный
                 return false;
         }
+
+        // Нули в конце поля данных — добивка до фиксированного размера, а не данные
+        while (!f.data.empty() && f.data.back() == 0)
+            f.data.pop_back();
+
         return true;
     }
 
@@ -248,31 +253,6 @@ namespace frame {
         return NOT_FOUND;
     }
 
-    // Конец кадра — RESERVED_LEN зарезервированных нулей. Возвращает позицию сразу за ними.
-    // Нули могут начаться раньше (например, с нулевого байта FCS), поэтому берём конец
-    // всей нулевой последовательности: кадр кончается там, где она закончилась.
-    // Если нули упираются в конец буфера, конец не подтверждён: последовательность
-    // может продолжиться. Тогда ждём следующий байт, а по таймауту (isFinal) считаем,
-    // что кадр закончился.
-    static size_t findEnd(const vector<uint8_t> &buf, size_t from, bool isFinal) {
-        for (size_t i = from; i + RESERVED_LEN <= buf.size(); i++) {
-            if (buf[i] != 0)
-                continue;
-
-            size_t j = i;
-            while (j < buf.size() && buf[j] == 0)
-                j++;
-
-            if (j - i < RESERVED_LEN)
-                continue;
-            if (j < buf.size() || isFinal)
-                return j;
-
-            return NOT_FOUND;   // нули дошли до конца буфера — ждём ещё байт
-        }
-        return NOT_FOUND;
-    }
-
     vector<Frame> Receiver::feed(const uint8_t *p, size_t n) {
         m_buf.insert(m_buf.end(), p, p + n);
         m_lastByte = std::chrono::steady_clock::now();
@@ -307,19 +287,26 @@ namespace frame {
             }
             m_buf.erase(m_buf.begin(), m_buf.begin() + start);  // мусор до флага
 
-            const size_t end = findEnd(m_buf, FLAG_LEN, isFinal);
-            if (end == NOT_FOUND) {
+            // Тело фиксированной длины: дестаффим всё, что есть, и берём первые BODY_LEN
+            vector<uint8_t> raw = destuff(m_buf.data() + FLAG_LEN, m_buf.size() - FLAG_LEN);
+            if (raw.size() < BODY_LEN) {
                 if (isFinal)
                     m_buf.clear();           // кадр так и не дослан
-                return;                              // кадр ещё не пришёл целиком — ждём
+                return;                      // кадр ещё не пришёл целиком — ждём
             }
 
-            vector<uint8_t> body = destuff(m_buf.data() + FLAG_LEN, end - FLAG_LEN);
+            vector<uint8_t> body(raw.begin(), raw.begin() + BODY_LEN);
+
+            // Стаффинг детерминирован, поэтому его длина даёт размер кадра
+            const size_t frameLen = stuff(body).bytes.size();
+            if (m_buf.size() < frameLen)
+                return;
+
             Frame f;
             if (parseBody(body, f))
                 out.push_back(f);                    // сбойный кадр просто пропускаем
 
-            m_buf.erase(m_buf.begin(), m_buf.begin() + end);  // нули резерва — часть кадра
+            m_buf.erase(m_buf.begin(), m_buf.begin() + frameLen);
             if (m_buf.empty())
                 return;
         }

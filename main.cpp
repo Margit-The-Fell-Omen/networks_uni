@@ -319,7 +319,6 @@ static void SendFrameData(const std::vector<uint8_t>& data)
     frame::Frame f;
     f.data = data;
     crc::setFCS(f);                                   // FCS считается только по полю данных
-    frame::StuffResult clean = frame::stuff(frame::serializeBody(f));   // стаффинг - над кадром с готовым FCS
 
     // эмуляция ошибки непосредственно перед передачей
     frame::Frame sent = f;
@@ -327,12 +326,25 @@ static void SendFrameData(const std::vector<uint8_t>& data)
     if (g_errorsEnabled)
         err = frame::injectError(sent, frame::ERROR_PERCENT);
 
+    frame::Frame view = f;                            // в окно состояния — без добивки
+    frame::Frame viewSent = sent;
+
+    if (f.data.size() < frame::MAX_DATA_LEN)
+        f.data.resize(frame::MAX_DATA_LEN, 0x00);     // добивка до фиксированного тела
+    if (sent.data.size() < frame::MAX_DATA_LEN)
+        sent.data.resize(frame::MAX_DATA_LEN, 0x00);
+
+    frame::StuffResult clean = frame::stuff(frame::serializeBody(f));
     frame::StuffResult s = err.applied ? frame::stuff(frame::serializeBody(sent)) : clean;
-    // Кадр заканчивается нулями резерва, отдельный закрывающий байт не нужен.
     g_serial.sendBytes(s.bytes.data(), s.bytes.size());
 
-    if (g_statusView)
-        AppendTxFrameView(g_statusView, frame::makeView(f, clean, sent, s, err), kTxColor);
+    if (g_statusView) {
+        frame::StuffResult viewClean = frame::stuff(frame::serializeBody(view));
+        frame::StuffResult viewS = err.applied ? frame::stuff(frame::serializeBody(viewSent))
+                                               : viewClean;
+        AppendTxFrameView(g_statusView,
+            frame::makeView(view, viewClean, viewSent, viewS, err), kTxColor);
+    }
 }
 
 static void SendLine(const std::wstring& line)
