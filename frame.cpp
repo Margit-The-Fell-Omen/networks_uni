@@ -171,6 +171,8 @@ namespace frame {
 
         for (size_t i = 0; i < RESERVED_LEN; i++) {
             f.reserved[i] = body[2 + FCS_LEN + dataLen + i];
+            if (f.reserved[i] != 0)   // резерв обязан быть нулевым, иначе кадр сбойный
+                return false;
         }
         return true;
     }
@@ -246,41 +248,78 @@ namespace frame {
         return NOT_FOUND;
     }
 
-    static size_t findEnd(const vector<uint8_t> &buf, size_t from) {
-        for (size_t i = from; i < buf.size(); i++) {
-            if (buf[i] == END_BYTE)
-                return i;
+    // Конец кадра — RESERVED_LEN зарезервированных нулей. Возвращает позицию сразу за ними.
+    // Нули могут начаться раньше (например, с нулевого байта FCS), поэтому берём конец
+    // всей нулевой последовательности: кадр кончается там, где она закончилась.
+    // Если нули упираются в конец буфера, конец не подтверждён: последовательность
+    // может продолжиться. Тогда ждём следующий байт, а по таймауту (isFinal) считаем,
+    // что кадр закончился.
+    static size_t findEnd(const vector<uint8_t> &buf, size_t from, bool isFinal) {
+        for (size_t i = from; i + RESERVED_LEN <= buf.size(); i++) {
+            if (buf[i] != 0)
+                continue;
+
+            size_t j = i;
+            while (j < buf.size() && buf[j] == 0)
+                j++;
+
+            if (j - i < RESERVED_LEN)
+                continue;
+            if (j < buf.size() || isFinal)
+                return j;
+
+            return NOT_FOUND;   // нули дошли до конца буфера — ждём ещё байт
         }
         return NOT_FOUND;
     }
 
     vector<Frame> Receiver::feed(const uint8_t *p, size_t n) {
         m_buf.insert(m_buf.end(), p, p + n);
+        m_lastByte = std::chrono::steady_clock::now();
         vector<Frame> out;
-        process(out);
+        process(out, false);
         return out;
     }
 
-    void Receiver::process(vector<Frame> &out) {
+    vector<Frame> Receiver::flush(int timeoutMs) {
+        vector<Frame> out;
+        if (m_buf.empty())
+            return out;
+
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - m_lastByte).count();
+        if (elapsed < timeoutMs)
+            return out;
+
+        process(out, true);
+        return out;
+    }
+
+    void Receiver::process(vector<Frame> &out, bool isFinal) {
         while (true) {
             const size_t start = findFlag(m_buf, 0);
             if (start == NOT_FOUND) {
-                if (m_buf.size() > FLAG_LEN - 1)
+                if (isFinal)
+                    m_buf.clear();           // данных больше не будет — мусор выбрасываем
+                else if (m_buf.size() > FLAG_LEN - 1)
                     m_buf.erase(m_buf.begin(), m_buf.end() - (FLAG_LEN - 1));
                 return;
             }
             m_buf.erase(m_buf.begin(), m_buf.begin() + start);  // мусор до флага
 
-            const size_t end = findEnd(m_buf, FLAG_LEN);
-            if (end == NOT_FOUND)
+            const size_t end = findEnd(m_buf, FLAG_LEN, isFinal);
+            if (end == NOT_FOUND) {
+                if (isFinal)
+                    m_buf.clear();           // кадр так и не дослан
                 return;                              // кадр ещё не пришёл целиком — ждём
+            }
 
             vector<uint8_t> body = destuff(m_buf.data() + FLAG_LEN, end - FLAG_LEN);
             Frame f;
             if (parseBody(body, f))
                 out.push_back(f);                    // сбойный кадр просто пропускаем
 
-            m_buf.erase(m_buf.begin(), m_buf.begin() + end + 1);  // +1 — съедаем '\n'
+            m_buf.erase(m_buf.begin(), m_buf.begin() + end);  // нули резерва — часть кадра
             if (m_buf.empty())
                 return;
         }

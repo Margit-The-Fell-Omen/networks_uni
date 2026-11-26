@@ -5,6 +5,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -12,7 +13,6 @@ namespace frame
 {
     constexpr size_t  FLAG_LEN = 8;
     constexpr uint8_t FLAG[FLAG_LEN] = {'4', '5', '0', '5', '0', '1', '-', '1'};
-    constexpr uint8_t END_BYTE = '\n';   // закрывающий флаг кадра
 
     // Параметры кодирования (циклический код, вариант 1).
     // Расчёт длины поля FCS:
@@ -36,14 +36,19 @@ namespace frame
     constexpr size_t MAX_STUFFED_BITS = MAX_BODY_BITS + MAX_BODY_BITS / 63;
     constexpr size_t MAX_STUFFED_LEN  = FLAG_LEN + (MAX_STUFFED_BITS + 7) / 8;
 
-    // | Флаг (8) | Флаг начала (1) | Осталось кадров (1) | Данные (1..77) | FCS (2) | Резерв (9) |
+    // Вариант 1: кадр целиком (флаг + стаффленное тело) не длиннее 100 байт.
+    static_assert(MAX_STUFFED_LEN <= MAX_FRAME_LEN, "frame is longer than 100 bytes");
+
+    // | Флаг (8) | Флаг начала (1) | Осталось кадров (1) | Данные (1..77) | FCS (2) | Резерв (9 нулей) |
+    // Кадр заканчивается 9 зарезервированными нулями: по ним приёмник находит конец кадра.
+    // Девять, а не десять: один байт резерва занят вторым байтом FCS (см. расчёт выше).
     struct Frame
     {
         uint8_t messageStart = 0;  // пока 0; в будущем 1 — первый кадр сообщения
         uint8_t framesLeft = 0;    // пока 0; в будущем — сколько кадров осталось (N..1)
         std::vector<uint8_t> data; // полезная нагрузка — UTF-8 байты сообщения
         uint8_t fcs[FCS_LEN] = {}; // циклический код только от поля данных
-        uint8_t reserved[RESERVED_LEN] = {};
+        uint8_t reserved[RESERVED_LEN] = {}; // обязательные нули: конец кадра
     };
 
     // Вероятность искажения кадра при включённой эмуляции ошибок, %.
@@ -96,9 +101,14 @@ namespace frame
     public:
         // Возвращает принятые кадры
         std::vector<Frame> feed(const uint8_t *p, size_t n);
+        // Отдаёт последний кадр, если с приёма последнего байта прошло >= timeoutMs.
+        // Нужен для кадра, за которым больше ничего не идёт: конец нулей резерва
+        // иначе нечем подтвердить.
+        std::vector<Frame> flush(int timeoutMs = 120);
     private:
         std::vector<uint8_t> m_buf;
-        void process(std::vector<Frame> &out);
+        std::chrono::steady_clock::time_point m_lastByte;
+        void process(std::vector<Frame> &out, bool isFinal);
     };
 }
 

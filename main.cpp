@@ -328,9 +328,8 @@ static void SendFrameData(const std::vector<uint8_t>& data)
         err = frame::injectError(sent, frame::ERROR_PERCENT);
 
     frame::StuffResult s = err.applied ? frame::stuff(frame::serializeBody(sent)) : clean;
-    std::vector<uint8_t> bytes = s.bytes;
-    bytes.insert(bytes.end(), frame::END_BYTE);
-    g_serial.sendBytes(bytes.data(), bytes.size());
+    // Кадр заканчивается нулями резерва, отдельный закрывающий байт не нужен.
+    g_serial.sendBytes(s.bytes.data(), s.bytes.size());
 
     if (g_statusView)
         AppendTxFrameView(g_statusView, frame::makeView(f, clean, sent, s, err), kTxColor);
@@ -589,6 +588,39 @@ static LRESULT CALLBACK InputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+static void HandleReceivedFrames(std::vector<frame::Frame> &frames)
+{
+    for (size_t i = 0; i < frames.size(); ++i) {
+
+        frame::Frame raw = frames[i];
+        crc::IsCorrect(frames[i]);
+
+        frame::ErrorInfo err;
+        for (size_t b = 0; b < raw.data.size(); ++b) {
+            if (raw.data[b] != frames[i].data[b]) {
+                uint8_t diff = raw.data[b] ^ frames[i].data[b];
+                int bit = 7;
+                while (bit >= 0 && !((diff >> bit) & 1)) --bit;
+                err.applied = true;
+                err.byteIndex = b;
+                err.bitIndex = 7 - bit;
+                break;
+            }
+        }
+
+        if (g_statusView) {
+            frame::StuffResult fixS = frame::stuff(frame::serializeBody(frames[i]));
+            frame::StuffResult rawS = frame::stuff(frame::serializeBody(raw));
+            AppendRxFrameView(g_statusView,
+                frame::makeView(frames[i], fixS, raw, rawS, err), kRxColor);
+        }
+
+        std::wstring text = FromUtf8(frames[i].data);
+        for (size_t k = 0; k < text.size(); ++k)
+            AppendOutputChar(text[k]);
+    }
+}
+
 static LRESULT CALLBACK OutputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg) {
@@ -600,44 +632,23 @@ static LRESULT CALLBACK OutputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             ES_READONLY | ES_AUTOVSCROLL,
             12, 40, 460, 268, hwnd, nullptr, nullptr, nullptr);
         SetFont(g_outputEdit);
+        SetTimer(hwnd, 1, 20, nullptr);   // проверка таймаута последнего кадра
         return 0;
     }
 
     case WM_APP_RX: {
         uint8_t byte = static_cast<uint8_t>(wParam);
         std::vector<frame::Frame> frames = g_receiver.feed(&byte, 1);
-
-        for (size_t i = 0; i < frames.size(); ++i) {
-
-            frame::Frame raw = frames[i];
-            crc::IsCorrect(frames[i]);
-
-            frame::ErrorInfo err;
-            for (size_t b = 0; b < raw.data.size(); ++b) {
-                if (raw.data[b] != frames[i].data[b]) {
-                    uint8_t diff = raw.data[b] ^ frames[i].data[b];
-                    int bit = 7;
-                   while (bit >= 0 && !((diff >> bit) & 1)) --bit;
-                    err.applied = true;
-                    err.byteIndex = b;
-                    err.bitIndex = 7 - bit;
-                    break;
-                }
-            }
-
-            if (g_statusView) {
-                frame::StuffResult fixS = frame::stuff(frame::serializeBody(frames[i]));
-                frame::StuffResult rawS = frame::stuff(frame::serializeBody(raw));
-                AppendRxFrameView(g_statusView,
-                    frame::makeView(frames[i], fixS, raw, rawS, err), kRxColor);
-            }
-
-            std::wstring text = FromUtf8(frames[i].data);
-            for (size_t k = 0; k < text.size(); ++k)
-                AppendOutputChar(text[k]);
-        }
+        HandleReceivedFrames(frames);
         return 0;
     }
+
+    case WM_TIMER:
+        if (wParam == 1) {
+            std::vector<frame::Frame> frames = g_receiver.flush(120);
+            HandleReceivedFrames(frames);
+        }
+        return 0;
 
     case WM_INITMENUPOPUP:
         if (lParam == 0) {
@@ -654,6 +665,7 @@ static LRESULT CALLBACK OutputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         return 0;
 
     case WM_DESTROY:
+        KillTimer(hwnd, 1);
         if (hwnd == g_outputWnd) g_outputWnd = nullptr;
         if (g_inputWnd && !IsLastRemaining())
             g_inputLocked = true;
