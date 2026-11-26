@@ -2,6 +2,7 @@
 // Created by Михаил on 29.09.2026.
 //
 #include "frame.h"
+#include <algorithm>
 
  using namespace std;
 
@@ -152,43 +153,25 @@ namespace frame {
         return bitsToBytes(output);
     }
 
-    static long findFlag(const vector<uint8_t> &buf, size_t from) {
-        for (size_t i = from; i + FLAG_LEN <= buf.size(); i++) {
-            bool match = true;
-            for (size_t k = 0; k < FLAG_LEN; k++) {
-                if (buf[i + k] != FLAG[k]) {
-                    match = false;
-                    break;
-                }
-            }
-            if (match)
-                return (long)i;
-        }
-        return -1;
+    static constexpr size_t NOT_FOUND = static_cast<size_t>(-1);
+
+    static size_t findFlag(const vector<uint8_t> &buf, size_t from) {
+        auto it = std::search(buf.begin() + from, buf.end(), FLAG, FLAG + FLAG_LEN);
+        return it == buf.end() ? NOT_FOUND : static_cast<size_t>(it - buf.begin());
     }
 
-    // Конец кадра — 10 зарезервированных нулей. Возвращает позицию сразу за ними.
-    // Нули могут начаться раньше (например, с FCS = 0), поэтому берём конец всей
-    // нулевой последовательности: кадр заканчивается там, где она закончилась.
-    // Если буфер оборвался ровно на 10 нулях — ждём ещё байт: последовательность
-    // может продолжиться, и тогда кадр ещё не дослан.
-    static long findFrameEnd(const vector<uint8_t> &buf, size_t from) {
-        for (size_t i = from; i + RESERVED_LEN <= buf.size(); i++) {
-            if (buf[i] != 0)
-                continue;
+    static size_t findEnd(const vector<uint8_t> &buf, size_t from) {
+        auto run = std::search_n(buf.begin() + from, buf.end(), RESERVED_LEN, uint8_t(0));
+        if (run == buf.end())
+            return NOT_FOUND;
 
-            size_t j = i;
-            while (j < buf.size() && buf[j] == 0)
-                j++;
+        auto end = std::find_if(run, buf.end(), [](uint8_t b) { return b != 0; });
 
-            if (j - i < RESERVED_LEN)
-                continue;
-            if (j == buf.size() && j - i == RESERVED_LEN)
-                return -1;
+        const size_t runLength = static_cast<size_t>(end - run);
+        if (end == buf.end() && runLength == RESERVED_LEN)
+            return NOT_FOUND;
 
-            return (long)j;
-        }
-        return -1;
+        return static_cast<size_t>(end - buf.begin());
     }
 
     vector<Frame> Receiver::feed(const uint8_t *p, size_t n) {
@@ -200,8 +183,8 @@ namespace frame {
 
     void Receiver::process(vector<Frame> &out) {
         while (true) {
-            long start = findFlag(m_buf, 0);
-            if (start < 0) {
+            const size_t start = findFlag(m_buf, 0);
+            if (start == NOT_FOUND) {
                 if (m_buf.size() > FLAG_LEN - 1)
                     m_buf.erase(m_buf.begin(), m_buf.end() - (FLAG_LEN - 1));
                 return;
@@ -209,10 +192,9 @@ namespace frame {
             m_buf.erase(m_buf.begin(), m_buf.begin() + start);  // мусор до флага
 
             // Конец кадра ищем по 10 зарезервированным нулям, а не по следующему флагу
-            long endPos = findFrameEnd(m_buf, FLAG_LEN);
-            if (endPos < 0)
+            const size_t end = findEnd(m_buf, FLAG_LEN);
+            if (end == NOT_FOUND)
                 return;                           // кадр ещё не пришёл целиком — ждём
-            size_t end = static_cast<size_t>(endPos);
 
             vector<uint8_t> body = destuff(m_buf.data() + FLAG_LEN, end - FLAG_LEN);
             Frame f;
