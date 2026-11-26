@@ -32,9 +32,11 @@ namespace frame
     constexpr size_t MAX_FRAME_LEN = 100;
     constexpr size_t MAX_DATA_LEN  = 77;
 
-    constexpr size_t MAX_BODY_BITS    = (SERVICE_LEN + MAX_DATA_LEN + RESERVED_LEN) * 8;
-    constexpr size_t MAX_STUFFED_BITS = MAX_BODY_BITS + MAX_BODY_BITS / 63;
-    constexpr size_t MAX_STUFFED_LEN  = FLAG_LEN + (MAX_STUFFED_BITS + 7) / 8;
+    constexpr size_t BODY_LEN      = SERVICE_LEN + MAX_DATA_LEN + RESERVED_LEN;
+
+    // Вставок не больше одной на 63 бита, то есть не больше байта на 63 байта тела
+    constexpr size_t STUFF_SLACK     = (BODY_LEN + 62) / 63;
+    constexpr size_t MAX_STUFFED_LEN = FLAG_LEN + BODY_LEN + STUFF_SLACK;
 
     // Вариант 1: кадр целиком (флаг + стаффленное тело) не длиннее 100 байт.
     static_assert(MAX_STUFFED_LEN <= MAX_FRAME_LEN, "frame is longer than 100 bytes");
