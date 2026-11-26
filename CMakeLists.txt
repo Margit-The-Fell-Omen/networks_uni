@@ -17,6 +17,9 @@ add_executable(serial_chat WIN32
 )
 
 if(MSVC)
+    # Статический runtime: exe запускается двойным кликом без установленного
+    # Visual C++ Redistributable и без DLL MinGW.
+    set_property(TARGET serial_chat PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
     target_compile_options(serial_chat PRIVATE /utf-8)
     # resources.rc уже содержит app.manifest; иначе линковщик
     # встраивает второй манифест с тем же идентификатором.

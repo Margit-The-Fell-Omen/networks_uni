@@ -364,13 +364,11 @@ static void AppendOutputChar(wchar_t ch)
     }
 }
 
-static HWND CreateFrameView(HWND parent, int x, int y, int w, int h, bool scroll, bool horizontalOnly = false)
+static HWND CreateFrameView(HWND parent, int x, int y, int w, int h, bool scroll)
 {
     DWORD style = WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY;
     if (scroll)
-        style |= WS_VSCROLL | WS_HSCROLL | ES_AUTOVSCROLL | ES_AUTOHSCROLL;
-    if (horizontalOnly)
-        style |= WS_HSCROLL | ES_AUTOHSCROLL;
+        style |= WS_VSCROLL | WS_HSCROLL | ES_AUTOVSCROLL;
 
     HWND ctl = CreateWindowExW(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
         style, x, y, w, h, parent, nullptr, nullptr, nullptr);
@@ -389,7 +387,50 @@ static HWND CreateFrameView(HWND parent, int x, int y, int w, int h, bool scroll
     return ctl;
 }
 
-static void AppendRichText(HWND edit, const std::wstring& text, const std::vector<bool>& underline, COLORREF color)
+// Заголовок полей должен быть виден целиком. Если при текущем DPI он шире окна,
+// уменьшаем только его шрифт, чтобы все пять названий остались в одной строке.
+static void FitFrameHeaderFont(HWND header, const std::wstring& text)
+{
+    if (!header)
+        return;
+
+    RECT rc = {};
+    GetClientRect(header, &rc);
+    const int avail = rc.right - 8;
+    if (avail <= 0)
+        return;
+
+    HDC dc = GetDC(header);
+    if (!dc)
+        return;
+
+    const int dpi = GetDeviceCaps(dc, LOGPIXELSY);
+    HFONT probe = CreateFontW(-MulDiv(10, dpi, 72), 0, 0, 0, FW_NORMAL,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_MODERN, L"Consolas");
+    HGDIOBJ old = SelectObject(dc, probe);
+    SIZE extent = {};
+    GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &extent);
+    SelectObject(dc, old);
+    DeleteObject(probe);
+    ReleaseDC(header, dc);
+
+    if (extent.cx <= avail)
+        return;
+
+    const int height = std::max(100, static_cast<int>(200 * avail / extent.cx));
+
+    CHARFORMATW cf = {};
+    cf.cbSize = sizeof(cf);
+    cf.dwMask = CFM_FACE | CFM_SIZE | CFM_CHARSET;
+    cf.yHeight = height;
+    cf.bCharSet = DEFAULT_CHARSET;
+    lstrcpynW(cf.szFaceName, L"Consolas", LF_FACESIZE);
+    SendMessageW(header, EM_SETCHARFORMAT, SCF_DEFAULT, reinterpret_cast<LPARAM>(&cf));
+}
+
+static void AppendRichText(HWND edit, const std::wstring& text, const std::vector<bool>& underline,
+                           COLORREF color, bool keepAtStart = false)
 {
     if (!edit)
         return;
@@ -418,9 +459,17 @@ static void AppendRichText(HWND edit, const std::wstring& text, const std::vecto
     }
 
     SendMessageW(edit, EM_SETREADONLY, TRUE, 0);
-    SendMessageW(edit, EM_SCROLLCARET, 0, 0);
-    SendMessageW(edit, WM_VSCROLL, SB_BOTTOM, 0);
-    SendMessageW(edit, EM_LINESCROLL, static_cast<WPARAM>(-32768), 0);
+    if (keepAtStart) {
+        // Заголовок всегда показываем с начала, даже если он не влез в строку.
+        SendMessageW(edit, EM_SETSEL, 0, 0);
+        SendMessageW(edit, EM_SCROLLCARET, 0, 0);
+        SendMessageW(edit, WM_VSCROLL, SB_TOP, 0);
+        SendMessageW(edit, WM_HSCROLL, SB_LEFT, 0);
+    } else {
+        SendMessageW(edit, EM_SCROLLCARET, 0, 0);
+        SendMessageW(edit, WM_VSCROLL, SB_BOTTOM, 0);
+        SendMessageW(edit, WM_HSCROLL, SB_LEFT, 0);
+    }
 }
 
 static std::wstring FromUtf8(const std::vector<uint8_t>& data)
@@ -749,28 +798,11 @@ static LRESULT CALLBACK ControlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         SetFont(g_checkErrors);
         SendMessageW(g_checkErrors, BM_SETCHECK, BST_CHECKED, 0);
 
-        HWND group = CreateWindowExW(0, L"BUTTON", L"",
-            WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-            8, 184, 344, 156, hwnd, nullptr, nullptr, nullptr);
-        SetFont(group);
-
         g_checkMultiAccess = CreateWindowExW(0, L"BUTTON", L"Эмуляция множественного доступа",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-            20, 210, 320, 22, hwnd, nullptr, nullptr, nullptr);
+            16, 184, 330, 22, hwnd, nullptr, nullptr, nullptr);
         SetFont(g_checkMultiAccess);
         SendMessageW(g_checkMultiAccess, BM_SETCHECK, BST_CHECKED, 0);
-
-        wchar_t buf[128];
-        wsprintfW(buf, L"Занятость канала: %d %%", channel::BUSY_PERCENT);
-        CreateLabel(hwnd, buf, 40, 238, 296, 18);
-
-        wsprintfW(buf, L"Коллизия: %d %%", channel::COLLISION_PERCENT);
-        CreateLabel(hwnd, buf, 40, 258, 296, 18);
-
-        CreateLabel(hwnd, L"Коллизия: в отношении байта", 40, 278, 296, 18);
-
-        wsprintfW(buf, L"Jam-сигнал: %d байта 0x%02X", channel::JAM_BYTES, channel::JAM_VALUE);
-        CreateLabel(hwnd, buf, 40, 298, 296, 18);
 
         FillPortCombo();
         return 0;
@@ -1001,50 +1033,23 @@ static LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         RECT rc = {};
         GetClientRect(hwnd, &rc);
 
-        const bool wide = rc.right >= 900;
-
         g_statusTx = CreateLabel(hwnd, L"Передано байт: 0", 16, 4, 300, 18);
 
-        int starsTitleY = 24;
-        int starsY = 22;
-        int countersY = 46;
-        int headY = 68;
-
-        if (wide) {
-            g_statusState = CreateStatusText(hwnd, L"Состояние канала: ожидание",
-                330, 4, rc.right - 346, 18);
-        } else {
-            g_statusState = CreateStatusText(hwnd, L"Состояние канала: ожидание",
-                16, 24, rc.right - 32, 18);
-            starsTitleY = 44;
-            starsY = 42;
-            countersY = 70;
-            headY = 92;
-        }
-
-        const int viewY = headY + 28;
-
         g_statusStarsTitle = CreateLabel(hwnd, L"Коллизии последнего кадра:",
-            16, starsTitleY, 230, 18);
+            16, 24, 230, 18);
 
         g_statusStars = CreateWindowExW(0, L"STATIC", L"—",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            250, starsY, rc.right - 266, 24, hwnd, nullptr, nullptr, nullptr);
+            250, 22, rc.right - 266, 24, hwnd, nullptr, nullptr, nullptr);
         SendMessageW(g_statusStars, WM_SETFONT,
             reinterpret_cast<WPARAM>(g_boldFont ? g_boldFont : g_font), TRUE);
 
-        g_statusCounters = CreateLabel(hwnd,
-            L"Попытки: 0   Коллизий: 0   Ожиданий канала: 0",
-            16, countersY, rc.right - 32, 18);
+        g_statusHead = CreateFrameView(hwnd, 12, 52, rc.right - 24, 26, false);
+        FitFrameHeaderFont(g_statusHead, frame::fieldNames());
+        AppendRichText(g_statusHead, frame::fieldNames(), {}, kTxColor, true);
 
-        g_statusHead = CreateFrameView(hwnd, 12, headY, rc.right - 24, 26, false);
-        AppendRichText(g_statusHead, frame::fieldNames(), {}, kTxColor);
-        // Заголовок полей показываем с начала строки, а не с конца.
-        SendMessageW(g_statusHead, EM_SETSEL, 0, 0);
-        SendMessageW(g_statusHead, EM_SCROLLCARET, 0, 0);
-
-        g_statusView = CreateFrameView(hwnd, 12, viewY, rc.right - 24,
-            rc.bottom - viewY - 8, true);
+        g_statusView = CreateFrameView(hwnd, 12, 80, rc.right - 24,
+            rc.bottom - 88, true);
 
         RefreshStatus();
         SetTimer(hwnd, kEngineTimer, kEngineIntervalMs, nullptr);
@@ -1175,7 +1180,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     int x = 40;
     const DWORD WindowStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     g_controlWnd = CreateWindowExW(0, kControlClass, L"Управление",
-        WindowStyle, x, 60, 370, 400,
+        WindowStyle, x, 60, 370, 270,
         nullptr, nullptr, hInstance, nullptr);
     g_inputWnd = CreateWindowExW(0, kInputClass, L"Ввод сообщений",
         WindowStyle, x + 420, 60, 500, 330,
